@@ -1,0 +1,23 @@
+{
+  "name": "jobclaw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "面向中国大陆招聘平台的简历事实约束求职助手",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @jobclaw/core && npm run build --workspace @jobclaw/chrome-extension && npm run build --workspace @jobclaw/desktop-bridge",
+    "typecheck": "npm run typecheck --workspace @jobclaw/core && npm run typecheck --workspace @jobclaw/chrome-extension && npm run typecheck --workspace @jobclaw/desktop-bridge",
+    "test": "npm run build --workspace @jobclaw/core && node --test packages/core/test/*.test.mjs",
+    "package:extension": "npm run build && node scripts/package-extension.mjs",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

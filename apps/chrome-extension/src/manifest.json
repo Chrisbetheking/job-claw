@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "JobClaw 求职助手",
+  "version": "0.1.0",
+  "minimum_chrome_version": "116",
+  "description": "基于真实简历事实约束的 BOSS 直聘岗位分析与招呼语辅助工具。",
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.zhipin.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开 JobClaw"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
