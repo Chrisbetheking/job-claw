@@ -1,11 +1,16 @@
-# 安全策略
+# Security Policy
 
-请不要在公开 Issue 中提交以下信息：
+## Supported version
 
-- BOSS 直聘登录 Cookie；
-- 手机号、身份证号、真实简历原件；
-- 招聘者私人联系方式；
-- OpenClaw、微信或其他渠道密钥；
-- AI 服务 API Key。
+当前维护版本：`1.2.37`
 
-发现可能导致账号接管、隐私泄露、绕过平台安全验证或远程执行代码的问题时，请通过仓库 Security Advisory 私下报告。
+## Reporting a vulnerability
+
+请不要在公开 Issue 中发布 API Key、真实简历、聊天记录或可识别个人身份的信息。
+
+可通过以下方式联系：
+
+- GitHub Issues：只提交脱敏后的复现步骤
+- 微信：`easymoneysniperchris`
+
+报告时请提供版本、复现步骤、影响范围和脱敏截图。

@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+const content = fs.readFileSync(new URL('../src/content-v37.js', import.meta.url), 'utf8');
+const background = fs.readFileSync(new URL('../src/background.js', import.meta.url), 'utf8');
+if (!content.includes('ensureExpectedConversation(expected || {}, 30000)')) throw new Error('missing verified conversation wait');
+if (!content.includes('目标 HR 会话未就绪：HR=')) throw new Error('missing no-return guard');
+if (content.includes("method: 'strict-existing-bubble'")) throw new Error('DOM existing text must not auto-complete delivery');
+if (!content.includes('let messageSentConfirmed = false')) throw new Error('missing confirmed send gate');
+if (!content.includes("messageSentConfirmed && !draftPresent")) throw new Error('home return is not gated by confirmed text');
+if (!content.includes("content-v37.js")) throw new Error('wrong content filename');
+if (!background.includes("EXPECTED_CONTENT_VERSION = '1.2.37'")) throw new Error('background version mismatch');
+console.log('UI24_NO_FALSE_SUCCESS_OK');
