@@ -856,7 +856,7 @@ function revealGeneratedProfile() {
 function setReadiness(id, ready) {
   const icon = $(id);
   if (!icon) return;
-  const step = { setupResumeIcon: '1', setupProfileIcon: '2', setupSettingsIcon: '3' }[id] || '';
+  const step = { setupResumeIcon: '1', setupProfileIcon: '2', setupSettingsIcon: '3', setupValidationIcon: '4' }[id] || '';
   icon.classList.toggle('is-ready', ready);
   icon.textContent = ready ? '✓' : step;
 }
@@ -870,16 +870,25 @@ function renderReadiness() {
   const enabledDirections = selectedDirectionItems(plan).length;
   const profileReady = Boolean(profileGenerated && plan.confirmed && enabledDirections);
   const settingsReady = Boolean(config.model?.apiKey);
-  const readyCount = [resumeReady, profileReady, settingsReady].filter(Boolean).length;
+  const validationRequired = config.requireSingleJobValidation !== false;
+  const validationReady = !validationRequired || Number(config.singleJobValidationCompletedAt || 0) > 0;
+  const readyCount = [resumeReady, profileReady, settingsReady, validationReady].filter(Boolean).length;
 
   setReadiness('setupResumeIcon', resumeReady);
   setReadiness('setupProfileIcon', profileReady);
   setReadiness('setupSettingsIcon', settingsReady);
+  setReadiness('setupValidationIcon', validationReady);
   setText('setupResumeStatus', resumeReady ? `已保存 ${state.resumeText.length} 字` : '尚未保存');
   setText('setupProfileStatus', profileReady ? `${enabledDirections} 个投递方向已应用` : profileGenerated ? '画像已生成 · 待选择投递方向' : '尚未生成');
   setText('setupSettingsStatus', settingsReady ? 'AI 已配置，搜索条件可用' : '请填写 AI API Key');
-  setText('readinessPill', `${readyCount} / 3`);
-  $('readinessPill')?.classList.toggle('accent', readyCount === 3);
+  setText('setupValidationStatus', !validationRequired
+    ? '已关闭首次单条验收'
+    : validationReady
+      ? `已通过 · ${new Date(Number(config.singleJobValidationCompletedAt)).toLocaleString('zh-CN', { hour12: false })}`
+      : '首次全自动成功后自动暂停，确认无误再继续批量');
+  $('setupValidationRow')?.classList.toggle('is-warning', validationRequired && !validationReady);
+  setText('readinessPill', `${readyCount} / 4`);
+  $('readinessPill')?.classList.toggle('accent', readyCount === 4);
 }
 
 function renderExecutionMode() {
@@ -931,11 +940,16 @@ function renderDynamic() {
     : paused ? '任务已暂停'
       : (auto ? '准备开始全自动投递' : '准备开始人工确认筛选'));
   const directionsReady = directionPlanReady();
-  setText('homeSubline', workflow.statusText || (directionsReady
-    ? (auto ? '只会投递你已勾选的岗位方向，达标后自动联系招聘方。' : '只会筛选你已勾选的岗位方向，AI 推荐后由你确认。')
-    : profileDraftReady()
-      ? '职业画像已生成，请先选择并保存要投递的岗位方向。'
-      : '完成简历画像和搜索条件后即可启动。'));
+  const validationPending = auto
+    && state.config?.requireSingleJobValidation !== false
+    && !Number(state.config?.singleJobValidationCompletedAt || 0);
+  setText('homeSubline', workflow.statusText || (validationPending
+    ? '首次全自动只执行 1 个岗位并自动暂停；确认文字和附件无误后再继续批量。'
+    : directionsReady
+      ? (auto ? '只会投递你已勾选的岗位方向，达标后自动联系招聘方。' : '只会筛选你已勾选的岗位方向，AI 推荐后由你确认。')
+      : profileDraftReady()
+        ? '职业画像已生成，请先选择并保存要投递的岗位方向。'
+        : '完成简历画像和搜索条件后即可启动。'));
   setText('statDiscovered', stats.discovered || 0);
   setText('statAnalyzed', stats.analyzed || 0);
   setText('statPending', pendingCount);

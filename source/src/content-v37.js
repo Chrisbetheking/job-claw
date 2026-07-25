@@ -1,5 +1,5 @@
 (() => {
-const JOBCLAW_CONTENT_VERSION = '1.2.37';
+const JOBCLAW_CONTENT_VERSION = '1.3.0';
 const JOBCLAW_CONTENT_FILE = 'content-v37.js';
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
 const existingRuntime = globalThis.__JOBCLAW_CONTENT_RUNTIME__;

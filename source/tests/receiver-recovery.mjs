@@ -23,7 +23,7 @@ globalThis.chrome = {
     query: async () => [{ id: 42, active: true, url: 'https://www.zhipin.com/web/geek/job', title: 'BOSS直聘' }],
     sendMessage: async (_id, message) => {
       if (!receiverReady) throw new Error('Could not establish connection. Receiving end does not exist.');
-      if (message.type === 'PROBE') return { ok: true, contentVersion: '1.2.37', contentFile: 'content-v37.js', pageType: 'jobs' };
+      if (message.type === 'PROBE') return { ok: true, contentVersion: '1.3.0', contentFile: 'content-v37.js', pageType: 'jobs' };
       if (message.type === 'RUN') { runCount += 1; return { ok: true }; }
       return { ok: true };
     }

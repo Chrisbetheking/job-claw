@@ -203,7 +203,7 @@ const server = http.createServer((request, response) => {
         return respond(response, 200, {
           ok: true,
           name: 'jobclaw-bridge',
-          version: '1.2.37',
+          version: '1.3.0',
           parsers: {
             pdftotext: commandExists('pdftotext'),
             macosPdfKit: process.platform === 'darwin' && (fs.existsSync(path.join(__dirname, 'resume_parser')) || commandExists('xcrun'))
@@ -265,5 +265,5 @@ server.on('error', error => {
 });
 
 server.listen(config.port, '127.0.0.1', () => {
-  console.log(`JobClaw Bridge 1.2.37 http://127.0.0.1:${config.port}`);
+  console.log(`JobClaw Bridge 1.3.0 http://127.0.0.1:${config.port}`);
 });

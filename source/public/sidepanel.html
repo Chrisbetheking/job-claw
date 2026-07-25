@@ -61,8 +61,8 @@
 
         <article class="module-card readiness-card">
           <div class="module-title compact-title">
-            <div><b>启动检查</b><small>三项准备完成后开始采集</small></div>
-            <span class="pill" id="readinessPill">0 / 3</span>
+            <div><b>启动检查</b><small>准备项完成后开始采集</small></div>
+            <span class="pill" id="readinessPill">0 / 4</span>
           </div>
           <div class="readiness-list">
             <button class="readiness-row" type="button" data-jump-page="resume" data-resume-view="source">
@@ -73,6 +73,9 @@
             </button>
             <button class="readiness-row" type="button" data-jump-page="settings">
               <span class="readiness-icon" id="setupSettingsIcon">3</span><span><b>搜索与 AI</b><small id="setupSettingsStatus">等待检查</small></span><i></i>
+            </button>
+            <button class="readiness-row" type="button" id="setupValidationRow" data-jump-page="messages">
+              <span class="readiness-icon" id="setupValidationIcon">4</span><span><b>单条投递验收</b><small id="setupValidationStatus">首次全自动成功后自动通过</small></span><i></i>
             </button>
           </div>
         </article>

@@ -5,8 +5,9 @@ const manifest = JSON.parse(await readFile(`${root}/manifest.json`, 'utf8'));
 const background = await readFile(`${root}/background.js`, 'utf8');
 const content = await readFile(`${root}/content-v37.js`, 'utf8');
 const sidepanel = await readFile(`${root}/sidepanel.js`, 'utf8');
+const jobPriority = await readFile(`${root}/lib/job-priority.js`, 'utf8');
 
-if (manifest.version !== '1.2.37') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '1.3.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js not registered');
 for (const permission of ['offscreen', 'clipboardWrite', 'debugger']) {
   if (!manifest.permissions.includes(permission)) throw new Error(`missing permission ${permission}`);
@@ -17,12 +18,14 @@ for (const token of [
   'debuggerPasteClipboard',
   'DOM.getNodeForLocation',
   'cdp-clipboard-paste',
-  'computeJobPriority',
   'rerankPending',
   'dispatchNextAutoPending',
   "case 'AUTO_DISPATCH_NEXT'"
 ]) {
   if (!background.includes(token)) throw new Error(`background missing ${token}`);
+}
+for (const token of ['computeJobPriority', 'rerankPending']) {
+  if (!jobPriority.includes(token)) throw new Error(`job priority module missing ${token}`);
 }
 for (const token of [
   'deepRoots',
@@ -98,7 +101,7 @@ globalThis.chrome = {
   tabs: {
     query: async () => [{ id: 1, url: 'https://www.zhipin.com/web/geek/job', status: 'complete', title: 'BOSS' }],
     sendMessage: async (tabId, message) => message.type === 'PROBE'
-      ? { ok: true, contentVersion: '1.2.37', contentFile: 'content-v37.js', pageType: 'jobs' }
+      ? { ok: true, contentVersion: '1.3.0', contentFile: 'content-v37.js', pageType: 'jobs' }
       : { ok: true },
     reload: async () => {},
     get: async () => ({ id: 1, url: 'https://www.zhipin.com/web/geek/job', status: 'complete' }),

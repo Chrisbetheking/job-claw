@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 const content = await readFile('dist/chrome-extension/content-v37.js', 'utf8');
 const background = await readFile('dist/chrome-extension/background.js', 'utf8');
+const taskState = await readFile('dist/chrome-extension/lib/task-state.js', 'utf8');
 
 const requiredContent = [
   'expectedChatContext(job = {}, pendingId = \'\')',
@@ -26,12 +27,12 @@ const requiredBackground = [
   "case 'CHAT_BINDING_CHECK'",
   "case 'CHAT_BINDING_CONFIRMED'",
   'chatDeliveryLedger',
-  '当前 HR 会话已绑定其他岗位任务',
-  "verify_chat_target: ['核对 HR 与岗位', 82]"
+  '当前 HR 会话已绑定其他岗位任务'
 ];
 for (const token of requiredBackground) {
   if (!background.includes(token)) throw new Error(`UI22 background missing: ${token}`);
 }
+if (!taskState.includes("verify_chat_target: ['核对 HR 与岗位', 82]")) throw new Error('UI22 task stage missing');
 if (/history\.back\(\)/.test(content.slice(content.indexOf('async function processApproved'), content.indexOf('async function processSearch')))) {
   throw new Error('processApproved must not return to previous HR with history.back');
 }

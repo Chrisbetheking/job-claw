@@ -2,9 +2,10 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const content = await readFile('dist/chrome-extension/content-v37.js', 'utf8');
+const conversationIdentity = await readFile('dist/chrome-extension/lib/conversation-identity.js', 'utf8');
 const background = await readFile('dist/chrome-extension/background.js', 'utf8');
 const manifest = JSON.parse(await readFile('dist/chrome-extension/manifest.json', 'utf8'));
-if (manifest.version !== '1.2.37') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '1.3.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 
 const listeners = {};
 class FakeEvent { constructor(type, init = {}) { this.type = type; Object.assign(this, init); } preventDefault() {} }
@@ -75,9 +76,10 @@ if (wrongKey === fallbackKey) throw new Error('wrong HR produced same conversati
 const urlKey = adapter.deriveConversationKey({ url: 'https://app.zhipin.com/web/geek/chat?conversationId=conv-35' }, {}, '');
 if (!urlKey.includes('conversationid=conv-35')) throw new Error(`explicit chat token fallback missing: ${urlKey}`);
 
+for (const token of ['deriveConversationReservationKey', 'sameRecruiterReservation']) {
+  if (!conversationIdentity.includes(token)) throw new Error(`conversation identity module missing: ${token}`);
+}
 for (const token of [
-  'deriveConversationReservationKey',
-  'sameRecruiterReservation',
   'ui35ConversationKeyMigration',
   'conversationKey: key',
   '目标 HR 已核验，但无法建立安全投递锁'

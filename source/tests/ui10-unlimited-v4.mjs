@@ -10,7 +10,7 @@ const [html, sidepanel, background, content, common, manifest] = await Promise.a
   readFile(`${root}/manifest.json`, 'utf8').then(JSON.parse)
 ]);
 
-if (!/^1\.2\.(?:1[0-9]|[2-9][0-9])$/.test(manifest.version)) throw new Error(`版本错误：${manifest.version}`);
+if (!/^1\.(?:2\.(?:1[0-9]|[2-9][0-9])|3\.0)$/.test(manifest.version)) throw new Error(`版本错误：${manifest.version}`);
 if (!common.includes('discoveryLimit: 0')) throw new Error('默认采集配置不是无限制');
 if (!common.includes('aiLimit: 0')) throw new Error('仍存在隐藏 AI 数量上限默认值');
 if (!common.includes("model: 'deepseek-v4-pro'")) throw new Error('默认模型不是 deepseek-v4-pro');

@@ -14,6 +14,8 @@ export const DEFAULTS = {
     sendOnlineResume: false,
     betweenJobsSeconds: 12,
     attachmentDelaySeconds: 4,
+    requireSingleJobValidation: true,
+    singleJobValidationCompletedAt: 0,
     model: {
       baseUrl: 'https://api.deepseek.com',
       apiKey: '',

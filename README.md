@@ -8,10 +8,11 @@
 
 [快速开始](#快速开始) · [功能介绍](#核心功能) · [完整教程](docs/新手安装与使用.md) · [常见问题](docs/常见问题.md) · [隐私与安全](docs/隐私与安全.md)
 
-![Version](https://img.shields.io/badge/version-v1.2.37-078A83)
+![Version](https://img.shields.io/badge/version-v1.3.0-078A83)
 ![Chrome](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4)
 ![Storage](https://img.shields.io/badge/data-local--first-2AA66A)
 ![Language](https://img.shields.io/badge/language-简体中文-F06284)
+![License](https://img.shields.io/badge/license-Apache--2.0-2AA66A)
 
 </div>
 
@@ -81,9 +82,9 @@ JobClaw 把这些环节整理成一条清晰流程：
 5. 选择要投递的岗位方向
 6. 第一次只测试一个岗位
 
-### 4. 单条验证通过后再批量运行
+### 4. 首次全自动会强制单条验收
 
-第一次使用全自动模式前，请确认：
+v1.3.0 默认启用“首次单条验收”：第一次全自动成功投递 1 个岗位后会自动暂停。请确认：
 
 - 进入的是正确 HR 会话
 - 求职文字真实出现在右侧聊天气泡
@@ -91,7 +92,7 @@ JobClaw 把这些环节整理成一条清晰流程：
 - 任务结果被正确记录
 - 投递完成后能够返回职位页继续搜索
 
-任何一步未确认，都应先暂停并查看失败原因，不要连续重复点击重试。
+任何一步未确认，都应查看失败原因，不要连续重复点击重试。确认首条投递无误后，再次开始任务即可进入批量流程。详细规则见 [首次单条投递验收](docs/首次单条验收.md)。
 
 ## 使用流程
 
@@ -163,7 +164,7 @@ OpenClaw 是**可选的本地执行与恢复中心**，不是普通用户开始�
 - 请勿把真实简历、API Key、手机号、邮箱或完整运行日志提交到公开仓库和 Issue
 - 导出诊断信息前，应确认敏感字段已经隐藏
 
-更完整的说明见：[隐私与安全](docs/隐私与安全.md)。
+更完整的说明见：[隐私与安全](docs/隐私与安全.md) 和 [Chrome 权限说明](docs/权限说明.md)。
 
 ## 安全边界
 
@@ -211,13 +212,15 @@ JobClaw 不应实现或用于：
 <summary>展开查看目录说明</summary>
 
 ```text
-JobClaw-by-Chris-v1.2.37/
+JobClaw-by-Chris-v1.3.0/
 ├── chrome-extension/       可直接加载的 Chrome 扩展
 ├── source/                 扩展源代码、构建脚本和测试
 ├── desktop-bridge/         OpenClaw 本地桥接
 ├── skills/jobclaw/         OpenClaw Skill
 ├── docs/                   新手教程、常见问题和安全说明
 ├── CHANGELOG.md            版本更新记录
+├── LICENSE / NOTICE        Apache-2.0 与署名信息
+├── ATTRIBUTION.md          引用、二创和转载署名方式
 ├── CONTRIBUTING.md         贡献指南
 └── SECURITY.md             安全报告方式
 ```
@@ -233,7 +236,6 @@ JobClaw-by-Chris-v1.2.37/
 
 ```bash
 cd source
-npm install
 npm test
 npm run build
 ```
@@ -255,6 +257,17 @@ npm run build
 - 错误页面中的完整错误信息
 
 微信：`easymoneysniperchris`
+
+
+## 开源许可、署名与通知
+
+JobClaw 采用 [Apache License 2.0](LICENSE) 开源。复制、修改和再分发时，请保留 `LICENSE` 与 `NOTICE`，明确标注：
+
+> Based on JobClaw by Chris — https://github.com/Chrisbetheking/job-claw
+
+发布二创、教程、视频、文章、商业集成或较大改编时，也请通过 GitHub Issue 或微信 `easymoneysniperchris` 通知作者。通知用于协作、署名和案例收集，不构成 Apache-2.0 之外的附加许可条件。
+
+详细署名格式见 [ATTRIBUTION.md](ATTRIBUTION.md)，品牌使用规则见 [TRADEMARKS.md](TRADEMARKS.md)。
 
 ## 免责声明
 

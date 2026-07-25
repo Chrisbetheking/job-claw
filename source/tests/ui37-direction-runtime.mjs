@@ -65,7 +65,7 @@ globalThis.chrome = {
     query: async () => [{ id: 1, active: true, status: 'complete', url: 'https://www.zhipin.com/web/geek/job', title: 'BOSS' }],
     get: async () => ({ id: 1, active: true, status: 'complete', url: 'https://www.zhipin.com/web/geek/job', title: 'BOSS' }),
     sendMessage: async (_id, message) => message.type === 'PROBE'
-      ? { ok: true, contentVersion: '1.2.37', contentFile: 'content-v37.js', pageType: 'jobs' }
+      ? { ok: true, contentVersion: '1.3.0', contentFile: 'content-v37.js', pageType: 'jobs' }
       : { ok: true },
     reload: async () => {},
     onUpdated: { addListener: () => {}, removeListener: () => {} }

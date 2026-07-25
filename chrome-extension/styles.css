@@ -1264,3 +1264,15 @@ details[open] .chevron { margin-top: 4px; transform: rotate(225deg); }
   .direction-item-footer { flex-wrap: wrap; }
   .direction-source { margin-left: 0; }
 }
+
+/* v1.3.0 first-run safety validation */
+.readiness-row.is-warning {
+  background: #fff9ec;
+}
+.readiness-row.is-warning .readiness-icon {
+  background: #fff0c7;
+  color: #a56800;
+}
+.readiness-row.is-warning small {
+  color: #8b651f;
+}

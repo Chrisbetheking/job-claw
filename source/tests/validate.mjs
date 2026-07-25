@@ -4,13 +4,15 @@ import { spawnSync } from 'node:child_process';
 const root = 'dist/chrome-extension';
 const required = [
   'manifest.json', 'background.js', 'common.js', 'content-v37.js',
-  'sidepanel.html', 'sidepanel.js', 'styles.css', 'pdf-extractor.js', 'offscreen.html', 'offscreen.js'
+  'sidepanel.html', 'sidepanel.js', 'styles.css', 'pdf-extractor.js', 'offscreen.html', 'offscreen.js',
+  'lib/conversation-identity.js', 'lib/task-state.js', 'lib/job-priority.js'
 ];
 for (const file of required) await access(`${root}/${file}`);
 try { await access(`${root}/content.js`); throw new Error('旧 content.js 不应进入 UI22 构建'); } catch (error) { if (!String(error?.message || '').includes('ENOENT')) throw error; }
 
 const manifest = JSON.parse(await readFile(`${root}/manifest.json`, 'utf8'));
 if (manifest.manifest_version !== 3) throw new Error('Manifest 不是 V3');
+if (manifest.version !== '1.3.0') throw new Error(`Manifest 版本异常：${manifest.version}`);
 if (manifest.side_panel?.default_path !== 'sidepanel.html') throw new Error('side_panel 配置错误');
 if (manifest.background?.service_worker !== 'background.js' || manifest.background?.type !== 'module') throw new Error('background module 配置错误');
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js 未注册');
@@ -27,9 +29,10 @@ const panels = [...html.matchAll(/data-page-panel="([^"]+)"/g)].map(match => mat
 const expected = ['home', 'resume', 'messages', 'settings', 'openclaw'];
 if (JSON.stringify(navPages) !== JSON.stringify(expected)) throw new Error(`导航页面不正确：${JSON.stringify(navPages)}`);
 if (JSON.stringify(panels) !== JSON.stringify(expected)) throw new Error(`内容页面不正确：${JSON.stringify(panels)}`);
+if (!html.includes('id="readinessPill">0 / 4')) throw new Error('单条验收启动检查未加入');
 const collapsibleCount = (html.match(/data-collapsible=/g) || []).length;
 if (collapsibleCount !== 8) throw new Error(`明确折叠模块数量异常：${collapsibleCount}`);
-for (const id of ['resumeImportNotice', 'resumeRetryAction', 'resumePasteAction', 'expandResumeEditor', 'profileSummaryInput', 'profileGenerationPill', 'profileGenerationNote', 'saveProfile', 'activeTaskProgress', 'searchTaskList', 'deliveryTaskList', 'retryAllFailedTasks']) {
+for (const id of ['setupValidationRow', 'setupValidationIcon', 'setupValidationStatus', 'resumeImportNotice', 'resumeRetryAction', 'resumePasteAction', 'expandResumeEditor', 'profileSummaryInput', 'profileGenerationPill', 'profileGenerationNote', 'saveProfile', 'activeTaskProgress', 'searchTaskList', 'deliveryTaskList', 'retryAllFailedTasks']) {
   if (!html.includes(`id="${id}"`)) throw new Error(`必要 UI 元素缺失：${id}`);
 }
 

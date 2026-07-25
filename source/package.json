@@ -1,10 +1,18 @@
 {
-  "name": "jobclaw-internal-formal",
+  "name": "jobclaw-by-chris",
   "private": true,
-  "version": "1.2.37",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/validate.mjs && node tests/profile-fallback.mjs && node tests/receiver-recovery.mjs && node tests/receiver-failure.mjs && node tests/ui9-applicant-modes.mjs && node tests/ui10-unlimited-v4.mjs && node tests/ui11-detail-recovery.mjs && node tests/ui12-profile-draft-persistence.mjs && node tests/ui13-chat-entry-recovery.mjs && node tests/ui14-chat-domain-handoff.mjs && node tests/ui16-csp-click-context.mjs && node tests/ui17-runtime-isolation.mjs && node tests/ui17-stale-tab-refresh.mjs && node tests/ui18-task-progress.mjs && node tests/ui18-retry-runtime.mjs && node tests/ui20-text-before-attachment.mjs && node tests/ui20-strict-send-runtime.mjs && node tests/ui20-send-button-selection.mjs && node tests/ui21-conversation-binding.mjs && node tests/ui22-strict-transcript-pacing.mjs && node tests/ui22-left-preview-guard.mjs && node tests/ui24-no-false-success.mjs && node tests/ui24-external-application-skip.mjs && node tests/ui27-main-world-chat-write.mjs && node tests/ui28-profile-generation.mjs && node tests/ui29-ai-profile-retry.mjs && node tests/ui30-chat-atomic-sort.mjs && node tests/ui31-conversation-selection.mjs && node tests/ui34-plaintext-editor.mjs && node tests/ui34-weak-chat-evidence.mjs && node tests/ui34-retry-lock.mjs && node tests/ui34-exact-cdp-target.mjs && node tests/ui35-conversation-key-fallback.mjs && node tests/ui36-bound-conversation-stability.mjs && node tests/ui37-direction-selection.mjs && node tests/ui37-direction-runtime.mjs"
+    "check:manifest": "node scripts/check-manifest.mjs",
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "scan:secrets": "node scripts/scan-secrets.mjs",
+    "test:unit": "node tests/run-unit.mjs",
+    "test:integration": "node tests/run-integration.mjs",
+    "test:regression": "node tests/run-regression.mjs",
+    "test:all": "npm run build && node tests/validate.mjs && npm run test:unit && npm run test:integration && npm run test:regression && npm run check:manifest && npm run check:syntax && npm run scan:secrets && npm run check:release-sync",
+    "test": "npm run test:all",
+    "check:release-sync": "node scripts/check-release-sync.mjs"
   }
 }

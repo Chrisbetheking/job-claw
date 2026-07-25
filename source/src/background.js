@@ -1,46 +1,16 @@
 import { DEFAULTS, safeClone, today, uniq } from './common.js';
+import { normalizeConversationIdentity, deriveConversationReservationKey, sameRecruiterReservation } from './lib/conversation-identity.js';
+import { TERMINAL_RUN_STATUSES, taskStageMeta } from './lib/task-state.js';
+import { rerankPending } from './lib/job-priority.js';
 
 const BRIDGE_ENDPOINTS = ['http://127.0.0.1:17899', 'http://localhost:17899'];
-const EXPECTED_CONTENT_VERSION = '1.2.37';
+const EXPECTED_CONTENT_VERSION = '1.3.0';
 const CONTENT_SCRIPT_FILE = 'content-v37.js';
 const storage = {
   get: keys => chrome.storage.local.get(keys),
   all: () => chrome.storage.local.get(null),
   set: patch => chrome.storage.local.set(patch)
 };
-
-function normalizeConversationIdentity(value) {
-  return String(value || '')
-    .replace(/\s+/g, '')
-    .replace(/有限责任公司|股份有限公司|有限公司|招聘者|招聘方|人事行政|人事|hr|在线|刚刚活跃|活跃/gi, '')
-    .replace(/[()（）【】\[\]<>《》,，。.:：;；_\-—·•｜|]/g, '')
-    .trim()
-    .toLowerCase();
-}
-
-function deriveConversationReservationKey(context = {}, expected = {}, pendingId = '') {
-  const recruiterName = String(context.recruiterName || expected.recruiterName || '').trim();
-  const company = String(context.companyName || expected.company || '').trim();
-  const recruiterKey = normalizeConversationIdentity(recruiterName).slice(0, 80);
-  const companyKey = normalizeConversationIdentity(company).slice(0, 100);
-  if (recruiterKey) return `hr:${recruiterKey}${companyKey ? `|company:${companyKey}` : ''}`;
-
-  const token = String(context.urlToken || '').trim();
-  if (/conversationid=|chatid=|relationid=|bossid=|uid=/i.test(token)) return `chat:${token}`;
-  const observed = normalizeConversationIdentity(`${context.headerText || ''} ${context.selectedText || ''}`).slice(0, 160);
-  if (observed) return `observed:${observed}`;
-  return pendingId ? `task:${String(pendingId)}` : '';
-}
-
-function sameRecruiterReservation(entry = {}, recruiterName = '', company = '') {
-  const leftRecruiter = normalizeConversationIdentity(entry.recruiterName);
-  const rightRecruiter = normalizeConversationIdentity(recruiterName);
-  if (!leftRecruiter || !rightRecruiter || leftRecruiter !== rightRecruiter) return false;
-  const leftCompany = normalizeConversationIdentity(entry.company);
-  const rightCompany = normalizeConversationIdentity(company);
-  // 两边公司都明确且不一致时，允许同名 HR；任一侧公司缺失时按安全策略视为同一会话。
-  return !(leftCompany && rightCompany && leftCompany !== rightCompany);
-}
 
 const debuggerLocks = new Map();
 
@@ -948,6 +918,20 @@ async function init() {
     patch.chatTransition = null;
     patch.ui35ConversationKeyMigration = true;
   }
+  if (!current.v130SingleValidationMigration) {
+    const baseConfig = patch.config || current.config || {};
+    const alreadySuccessful = Number(current.stats?.sent || 0) > 0
+      || Number(baseConfig.singleJobValidationCompletedAt || 0) > 0;
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      requireSingleJobValidation: baseConfig.requireSingleJobValidation !== false,
+      singleJobValidationCompletedAt: alreadySuccessful
+        ? Number(baseConfig.singleJobValidationCompletedAt || Date.now())
+        : 0
+    };
+    patch.v130SingleValidationMigration = true;
+  }
   if (Object.keys(patch).length) await storage.set(patch);
   const { stats } = await storage.get('stats');
   if (!stats || stats.date !== today()) {
@@ -997,37 +981,6 @@ async function changeStats(delta = {}) {
   return next;
 }
 
-
-const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'ignored', 'skipped']);
-const TASK_STAGE_META = {
-  discovered: ['已发现岗位', 12],
-  collect_detail: ['读取岗位详情', 24],
-  ai_analyze: ['AI 匹配分析', 42],
-  ai_complete: ['AI 分析完成', 56],
-  waiting_review: ['等待人工确认', 60],
-  queued: ['等待投递', 64],
-  retry_queued: ['等待重新投递', 66],
-  open_job: ['打开岗位页面', 70],
-  open_chat: ['打开沟通窗口', 78],
-  verify_chat_target: ['核对 HR 与岗位', 82],
-  fill_message: ['填写求职招呼语', 86],
-  send_message: ['发送求职招呼语', 90],
-  verify_message: ['确认文字已发送', 94],
-  send_resume: ['发送简历附件', 97],
-  verify_result: ['确认投递结果', 98],
-  success: ['投递成功', 100],
-  failed: ['投递失败', 100],
-  ignored: ['已忽略', 100],
-  skipped: ['未达到推荐条件', 100]
-};
-
-function taskStageMeta(stage, label = '', progress = null) {
-  const meta = TASK_STAGE_META[stage] || [label || stage || '处理中', 0];
-  return {
-    label: String(label || meta[0] || '处理中'),
-    progress: Math.max(0, Math.min(100, Number(progress ?? meta[1] ?? 0)))
-  };
-}
 
 function runJobKey(job = {}) {
   return String(job.jobId || job.encryptJobId || job.url || [job.title, job.company, job.location].filter(Boolean).join('|') || '').trim();
@@ -2325,83 +2278,6 @@ function createTasks(profile, config, directionPlan) {
 }
 
 
-function salaryPriority(job = {}) {
-  const source = `${job.salary || ''} ${job.cardText || ''}`;
-  const numbers = [...source.matchAll(/(\d+(?:\.\d+)?)/g)].map(match => Number(match[1])).filter(Number.isFinite);
-  if (!numbers.length) return 0;
-  let midpoint = numbers.length >= 2 ? (numbers[0] + numbers[1]) / 2 : numbers[0];
-  if (/元\/天|元每天|\/天/.test(source)) midpoint *= 22 / 1000;
-  if (/元\/月|元每月/.test(source)) midpoint /= 1000;
-  return Math.max(0, Math.min(180, Math.round(midpoint * 6)));
-}
-
-function freshnessPriority(job = {}) {
-  const source = `${job.publishTime || ''} ${job.cardText || ''}`;
-  if (/刚刚|最新|今日|今天|分钟前|小时内/.test(source)) return 120;
-  if (/昨天|1天前/.test(source)) return 80;
-  const days = Number(source.match(/(\d+)\s*天前/)?.[1] || 0);
-  if (days > 0) return Math.max(0, 70 - days * 8);
-  return 0;
-}
-
-function computeJobPriority(item = {}) {
-  const analysis = item.analysis || {};
-  const job = item.job || {};
-  const hardBlocks = Array.isArray(analysis.hardBlocks) ? analysis.hardBlocks.length : 0;
-  const risks = Array.isArray(analysis.risks) ? analysis.risks.length : 0;
-  const gaps = Array.isArray(analysis.gaps) ? analysis.gaps.length : 0;
-  const score = Math.max(0, Math.min(100, Number(analysis.score || 0)));
-  let priority = score * 100;
-  if (analysis.decision === 'recommend') priority += 900;
-  if (analysis.decision === 'cautious') priority -= 350;
-  if (analysis.decision === 'reject') priority -= 5000;
-  priority -= hardBlocks * 2400;
-  priority -= risks * 90;
-  priority -= gaps * 45;
-  priority += salaryPriority(job);
-  priority += freshnessPriority(job);
-  if (/外部网申|立即网申|去网申/.test(`${job.applicationMode || ''} ${job.cardText || ''}`)) priority -= 6000;
-  priority -= Number(item.retryCount || 0) * 120;
-  return Math.round(priority);
-}
-
-function pendingStatusRank(status) {
-  return {
-    approved: 0,
-    approved_queue: 1,
-    pending: 2,
-    failed: 3,
-    sent: 4,
-    skipped: 5,
-    rejected: 6,
-    ignored: 7
-  }[status] ?? 8;
-}
-
-function rerankPending(items = []) {
-  const enriched = items.map(entry => ({
-    ...entry,
-    priorityScore: computeJobPriority(entry)
-  }));
-  enriched.sort((a, b) => {
-    const statusDiff = pendingStatusRank(a.status) - pendingStatusRank(b.status);
-    if (statusDiff) return statusDiff;
-    const priorityDiff = Number(b.priorityScore || 0) - Number(a.priorityScore || 0);
-    if (priorityDiff) return priorityDiff;
-    const scoreDiff = Number(b.analysis?.score || 0) - Number(a.analysis?.score || 0);
-    if (scoreDiff) return scoreDiff;
-    return Number(a.createdAt || 0) - Number(b.createdAt || 0);
-  });
-  let queueRank = 0;
-  return enriched.map(entry => {
-    if (['approved', 'approved_queue', 'pending'].includes(entry.status)) queueRank += 1;
-    return {
-      ...entry,
-      priorityRank: ['approved', 'approved_queue', 'pending'].includes(entry.status) ? queueRank : null
-    };
-  });
-}
-
 async function dispatchNextAutoPending() {
   const { pending = [], workflow = {}, config = {} } = await storage.get(['pending', 'workflow', 'config']);
   if (config.executionMode !== 'auto') return { started: false, reason: 'not-auto' };
@@ -3163,6 +3039,31 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           stage: message.stage || '',
           error: message.error || ''
         });
+
+        const validationPending = message.ok
+          && config.executionMode === 'auto'
+          && config.requireSingleJobValidation !== false
+          && !Number(config.singleJobValidationCompletedAt || 0);
+        if (validationPending) {
+          const nextConfig = { ...config, singleJobValidationCompletedAt: completedAt };
+          await storage.set({ config: nextConfig });
+          await patchWorkflow({
+            running: false,
+            paused: true,
+            pendingApplyId: null,
+            activeRunId: null,
+            phase: 'idle',
+            statusText: '单条验收已通过并自动暂停；确认聊天文字和附件后可继续批量'
+          });
+          await writeEvent('success', '首次单条投递验收通过', {
+            id: message.id,
+            runId: completedRun?.id || completedItem?.runId || '',
+            job: completedItem?.job,
+            completedAt
+          });
+          reply({ ok: true, validationCompleted: true, pausedForValidation: true });
+          break;
+        }
 
         if (updatedStats.sent >= Number(config.dailyTarget || 150)) {
           await patchWorkflow({ running: false, paused: true, pendingApplyId: null, activeRunId: null, phase: 'idle', statusText: `已完成今日 ${updatedStats.sent} 次成功投递` });
