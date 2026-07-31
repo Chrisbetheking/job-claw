@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 const background = await readFile('dist/chrome-extension/background.js', 'utf8');
 const manifest = JSON.parse(await readFile('dist/chrome-extension/manifest.json', 'utf8'));
-if (manifest.version !== '1.3.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '1.7.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 for (const token of [
   'async function debuggerFindEditableObject',
   'const deepQuery = (root, query)',

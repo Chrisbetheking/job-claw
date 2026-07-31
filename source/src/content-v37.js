@@ -1,5 +1,5 @@
 (() => {
-const JOBCLAW_CONTENT_VERSION = '1.3.0';
+const JOBCLAW_CONTENT_VERSION = '1.7.0';
 const JOBCLAW_CONTENT_FILE = 'content-v37.js';
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
 const existingRuntime = globalThis.__JOBCLAW_CONTENT_RUNTIME__;
@@ -159,6 +159,17 @@ async function send(type, payload = {}) {
     }
     throw error;
   }
+}
+
+async function waitForRateLimit(scope = 'discovery', label = '操作') {
+  const result = await send('RATE_LIMIT', { scope });
+  if (!result?.ok) throw new Error(result?.reason || `${label}已被安全限速器暂停`);
+  const waitMs = Math.max(0, Number(result.waitMs || 0));
+  if (waitMs > 0) {
+    await send('WORKFLOW', { patch: { statusText: `${label}安全等待 ${Math.ceil(waitMs / 1000)} 秒` } });
+    await sleep(waitMs);
+  }
+  return result;
 }
 
 async function waitFor(check, timeout = 12000, label = '页面条件') {
@@ -2199,6 +2210,7 @@ async function pauseForVerification() {
     level: 'warning',
     message: '检测到 BOSS 安全验证，任务已暂停'
   });
+  await send('SAFETY_OUTCOME', { ok: false, reason: '检测到BOSS安全验证' });
 }
 
 async function processApproved(state) {
@@ -2340,6 +2352,7 @@ async function processApproved(state) {
     currentStage = 'send_message';
     currentStageLabel = '发送求职招呼语';
     await updateTaskProgress({ runId, pendingId: id, job: item.job, task: item.task, stage: currentStage, progress: 92, stageLabel: currentStageLabel, status: 'running', retryable: true, setActive: true });
+    await waitForRateLimit('delivery', '投递');
     const pacing = state.config || {};
     const greetingResult = await adapter.sendGreeting(greeting, {
       chatReadyDelayMs: 5000,
@@ -2366,6 +2379,7 @@ async function processApproved(state) {
       currentStageLabel = '发送简历图片';
       await updateTaskProgress({ runId, pendingId: id, job: item.job, task: item.task, stage: currentStage, progress: 98, stageLabel: currentStageLabel, status: 'running', retryable: false, setActive: true });
       adapter.assertConversationKey(currentConversation.key, id);
+      await waitForRateLimit('attachment', '附件发送');
       const imageResult = await adapter.uploadResumeImage(material.resumeImage, {
         delayMs: Math.max(1000, Math.min(10000, Number(pacing.attachmentDelaySeconds || 4) * 1000)),
         expectedConversationKey: currentConversation.key,
@@ -2507,12 +2521,20 @@ async function processSearch(state) {
     const latest = await send('CONTENT_STATE');
     if (!latest.ok || latest.state.workflow?.paused || !latest.state.workflow?.running) return;
     const activeConfig = latest.state.config || config;
-    if (Number(latest.state.stats?.sent || 0) >= Number(activeConfig.dailyTarget || 150)) {
+    if (Number(latest.state.stats?.sent || 0) >= Number(activeConfig.dailyTarget || 30)) {
       await updateSearchProgress(task, taskIndex, {
         status: 'completed', progress: 100, stageLabel: '已达到今日成功投递目标',
         processed: processedCount, discovered: discoveredCount, analyzed: analyzedCount, failed: failedCount
       });
       await send('WORKFLOW', { patch: { running: false, paused: true, phase: 'idle', activeRunId: null, statusText: `已完成今日 ${latest.state.stats?.sent || 0} 次成功投递` } });
+      return;
+    }
+    if (Number(activeConfig.discoveryLimit || 100) > 0 && Number(latest.state.stats?.discovered || 0) >= Number(activeConfig.discoveryLimit || 100)) {
+      await updateSearchProgress(task, taskIndex, {
+        status: 'completed', progress: 100, stageLabel: '已达到今日岗位采集上限',
+        processed: processedCount, discovered: discoveredCount, analyzed: analyzedCount, failed: failedCount
+      });
+      await send('WORKFLOW', { patch: { running: false, paused: true, phase: 'idle', activeRunId: null, statusText: `已达到今日采集上限 ${activeConfig.discoveryLimit || 100}` } });
       return;
     }
 
@@ -2540,6 +2562,7 @@ async function processSearch(state) {
     let runId = run?.id || '';
 
     try {
+      await waitForRateLimit('discovery', '岗位读取');
       const detail = await adapter.openCard(card);
       processedCount += 1;
       counted = true;
@@ -2572,7 +2595,7 @@ async function processSearch(state) {
         continue;
       }
 
-      const job = adapter.extractJob(card);
+      let job = adapter.extractJob(card);
       const externalApplication = adapter.externalApplicationInfo();
       discoveredCount += 1;
       processed.add(key);
@@ -2607,6 +2630,23 @@ async function processSearch(state) {
         await sleep(500);
         continue;
       }
+      const preflight = await send('JOB_PREFLIGHT', { job });
+      if (!preflight?.ok) throw new Error(preflight?.error || '岗位安全预检失败');
+      job = { ...job, companyVerification: preflight.company || null, jobFingerprint: preflight.duplicate?.fingerprint || '' };
+      if (preflight.blocked) {
+        await send('STATS', { delta: { discovered: 1 } });
+        await updateTaskProgress({
+          runId, job, task, stage: 'skipped', progress: 100,
+          stageLabel: preflight.category === 'duplicate' ? '重复岗位已跳过' : '企业风险预检未通过',
+          status: 'skipped', error: preflight.reason || '安全预检未通过', retryable: false, setActive: false
+        });
+        await send('EVENT', { level: 'warning', message: `安全预检已跳过：${job.title}`, data: { job, preflight, runId } });
+        await updateSearchProgress(task, taskIndex, {
+          status: 'running', progress: Math.min(88, 22 + processedCount * 2), stageLabel: `持续扫描 · 已处理 ${processedCount} 个`,
+          processed: processedCount, discovered: discoveredCount, analyzed: analyzedCount, failed: failedCount
+        });
+        continue;
+      }
       run = await updateTaskProgress({
         runId, job, task, stage: 'discovered', progress: 30,
         stageLabel: '岗位详情已读取', status: 'running', retryable: false, setActive: true
@@ -2626,6 +2666,7 @@ async function processSearch(state) {
         runId, job, task, stage: 'ai_analyze', progress: 42,
         stageLabel: 'AI 匹配分析', status: 'running', retryable: false, setActive: true
       });
+      await waitForRateLimit('ai', 'AI分析');
       const ai = await send('AI_JOB', { job });
       analyzedCount += 1;
       await send('STATS', { delta: { analyzed: 1 } });
@@ -2651,9 +2692,17 @@ async function processSearch(state) {
         message: `岗位分析完成：${job.title}`,
         data: { job, analysis: ai.result, runId }
       });
-      if (ai.result.decision === 'recommend' && ai.result.score >= Number(activeConfig.minScore || 75)) {
-        const queued = await send('PENDING', { item: { job, analysis: ai.result, task, runId } });
-        if (queued.ok && activeConfig.executionMode === 'auto') {
+      const strategyResponse = await send('EVALUATE_STRATEGY', {
+        score: ai.result.score,
+        riskLevel: job.companyVerification?.riskLevel || 'unknown',
+        verified: Boolean(job.companyVerification?.verified),
+        decision: ai.result.decision,
+        hardBlocks: ai.result.hardBlocks || []
+      });
+      const strategy = strategyResponse?.result || { accepted: ai.result.score >= Number(activeConfig.minScore || 75), reason: '兼容模式' };
+      if (strategy.accepted) {
+        const queued = await send('PENDING', { item: { job, analysis: { ...ai.result, strategy }, task, runId } });
+        if (queued.ok && activeConfig.executionMode === 'auto' && !activeConfig.dryRun) {
           await send('EVENT', {
             level: 'success',
             message: `已进入自动排序队列：${job.title}`,
@@ -2669,7 +2718,7 @@ async function processSearch(state) {
           // 避免采到第一个岗位就立刻投递，导致后续更优岗位永远排在后面。
           const latestQueue = await send('CONTENT_STATE');
           const queueDepth = (latestQueue.state?.pending || []).filter(entry => entry.status === 'approved_queue').length;
-          if (queueDepth >= 5) {
+          if (queueDepth >= Math.max(1, Number(activeConfig.queueWarmup || (activeConfig.batchStrategy === 'mass' ? 3 : 4)))) {
             const dispatched = await send('AUTO_DISPATCH_NEXT');
             if (dispatched?.started) {
               await updateSearchProgress(task, taskIndex, {
@@ -2685,8 +2734,8 @@ async function processSearch(state) {
       } else {
         await updateTaskProgress({
           runId, job, task, stage: 'skipped', progress: 100,
-          stageLabel: ai.result.decision === 'reject' ? '硬条件不匹配' : '未达到推荐阈值',
-          status: 'skipped', analysis: ai.result, retryable: false
+          stageLabel: strategy.reason || (ai.result.decision === 'reject' ? '存在明确硬性冲突' : '未达到投递策略阈值'),
+          status: 'skipped', analysis: { ...ai.result, strategy }, retryable: false
         });
       }
       await updateSearchProgress(task, taskIndex, {
@@ -2725,7 +2774,7 @@ async function processSearch(state) {
   }
 
   const endState = await send('CONTENT_STATE');
-  if (endState?.state?.config?.executionMode === 'auto') {
+  if (endState?.state?.config?.executionMode === 'auto' && !endState?.state?.config?.dryRun) {
     const dispatched = await send('AUTO_DISPATCH_NEXT');
     if (dispatched?.started) {
       await updateSearchProgress(task, taskIndex, {

@@ -1,32 +1,30 @@
 {
-  "version": "1.2.37",
-  "artifact": "JobClaw-by-Chris-v1.2.37-GitHub.zip",
+  "version": "1.7.0",
+  "artifact": "JobClaw-by-Chris-v1.7.0.zip",
   "checks": {
     "manifestV3": true,
     "csp": "script-src 'self'; object-src 'self'; worker-src 'self'",
-    "javascriptSyntax": "PASS",
-    "jsonSyntax": "PASS",
-    "shellSyntax": "PASS",
-    "existingRegressionSuite": "PASS",
-    "directionSelection": "PASS",
-    "tutorialImages": 10,
-    "beginnerReadme": "PASS",
-    "issueTemplates": "PASS",
-    "staticApiKeyScan": "PASS",
-    "privateResumeDataScan": "PASS",
-    "staticBridgeTokenRemoved": "PASS",
-    "bridgeOriginRestricted": "PASS",
-    "zipIntegrity": "PASS",
-    "readmeImageLinks": "PASS",
-    "extensionIdMatch": "PASS",
-    "bridgeRuntimeOriginTest": "PASS"
+    "unitTests": "PASS",
+    "integrationTests": "PASS",
+    "regressionTests": "PASS",
+    "companyRiskProvider": "PASS",
+    "safetyRateLimiter": "PASS",
+    "circuitBreaker": "PASS",
+    "crossTaskDeduplication": "PASS",
+    "dryRun": "PASS",
+    "updateChecker": "PASS",
+    "safeMassApply": "PASS",
+    "nativeMessagingBridge": "PASS",
+    "dailyOpenClawReport": "PASS",
+    "staticSecretScan": "PASS",
+    "releaseSync": "PASS"
   },
   "notes": [
-    "仓库根目录可直接上传 GitHub，README 与 docs/images 使用相对路径。",
-    "公开仓库不包含默认 AI API Key、真实简历、手机号或邮箱。",
-    "桌面桥接仅监听 127.0.0.1，并限制为当前 JobClaw 扩展来源。",
-    "README 包含零基础安装、配置、简历、画像、方向选择、任务进度、OpenClaw 和故障排查。",
-    "联系方式已统一为微信 easymoneysniperchris。"
+    "source/src 与 source/public 是唯一源码入口",
+    "chrome-extension 为构建生成的可安装目录",
+    "第三方企业查询密钥仅允许保存在 OpenClaw 本地桥接环境变量中",
+    "安全海投只拦截明确硬性冲突 重复岗位和高风险岗位 技能年限学历差距只影响排序",
+    "OpenClaw使用HTTP和Native Messaging双通道 每日汇报保存在用户本机"
   ],
-  "validatedAt": "2026-07-24T16:29:31.521874+00:00"
+  "validatedAt": "2026-07-31T06:14:50.292Z"
 }

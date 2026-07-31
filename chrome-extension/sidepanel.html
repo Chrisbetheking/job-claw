@@ -286,9 +286,14 @@
           <div class="module-title"><div><b>执行模式</b><small>你可以随时在人工确认和全自动投递之间切换</small></div><span class="pill accent" id="settingsModePill">人工确认</span></div>
           <div class="mode-selector settings-mode-selector" role="group" aria-label="设置执行模式">
             <button class="mode-option is-active" type="button" data-execution-mode="review"><span>人工确认</span><small>逐条或批量确认后投递</small></button>
-            <button class="mode-option" type="button" data-execution-mode="auto"><span>全自动投递</span><small>达到推荐分数后自动沟通</small></button>
+            <button class="mode-option" type="button" data-execution-mode="auto"><span>全自动投递</span><small>按所选策略和安全限速自动沟通</small></button>
           </div>
           <p class="mode-policy" id="modePolicyText">AI 只负责筛选和生成求职招呼语，发送前由你最终确认。</p>
+          <div class="field-grid two compact-settings">
+            <label class="field"><span>投递策略</span><select id="batchStrategy"><option value="precise">精准投递</option><option value="mass">安全海投</option></select><small>精准投递按匹配度筛选 安全海投只拦截明确硬性冲突 重复岗位和高风险岗位</small></label>
+            <label class="field"><span>海投分析方式</span><select id="massApplyAnalysis"><option value="fast">快速模式 不逐岗调用AI</option><option value="ai">AI个性化分析</option></select><small>快速模式使用简历事实生成基础招呼语 AI模式更个性化但速度和成本更高</small></label>
+            <label class="switch-line compact-switch"><input id="dryRun" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>模拟运行</b><small>完成采集 核验 分析和队列预览 绝不发送消息</small></span></label>
+          </div>
         </article>
 
         <details class="module-card collapsible" data-collapsible="search-settings" open>
@@ -306,19 +311,40 @@
             <label class="field"><span>薪资待遇</span><input id="salary" type="text" placeholder="不限"></label>
             <div class="field-grid two numeric-grid">
               <label class="field"><span>推荐分数</span><input id="minScore" type="number" min="0" max="100" step="1"></label>
-              <label class="field"><span>每日成功投递目标</span><input id="dailyTarget" type="number" min="1" max="300" step="1"></label>
-            </div>
-            <div class="static-setting unlimited-setting">
-              <div><b>岗位采集数量</b><small>不设置采集上限，持续筛选到完成每日成功投递目标，或由你手动暂停/停止。</small></div>
-              <span class="pill accent">不限</span>
+              <label class="field"><span>每日成功投递目标</span><input id="dailyTarget" type="number" min="1" max="150" step="1"></label>
             </div>
             <div class="field-grid two numeric-grid">
-              <label class="field"><span>岗位切换间隔（秒）</span><input id="betweenJobsSeconds" type="number" min="3" max="30" step="1"><small>默认 12 秒，且只有当前 HR 的文字气泡确认发送后才开始计时。</small></label>
-              <label class="field"><span>文字后发附件（秒）</span><input id="attachmentDelaySeconds" type="number" min="1" max="10" step="1"><small>默认等待 4 秒；只有当前 HR 聊天正文中确认文字气泡后才发送简历图片。</small></label>
+              <label class="field"><span>每日岗位采集上限</span><input id="discoveryLimit" type="number" min="1" max="800" step="1"><small>安全海投建议设置为投递目标的2到4倍</small></label>
+              <label class="field"><span>同一公司每日上限</span><input id="maxPerCompanyPerDay" type="number" min="1" max="12" step="1"><small>避免同一家公司重复收到大量相似沟通</small></label>
+            </div>
+            <div class="field-grid two">
+              <label class="field"><span>投递效率</span><select id="pacingPreset"><option value="conservative">保守 15秒起</option><option value="standard">标准 9秒起</option><option value="efficient">高效 6秒起</option><option value="custom">自定义</option></select><small>始终单线程发送 遇到页面变慢或网络超时会自动降速</small></label>
+              <label class="field"><span>队列预热岗位数</span><input id="queueWarmup" type="number" min="1" max="10" step="1"><small>先积累少量岗位排序再开始投递 海投建议3个</small></label>
+            </div>
+            <div class="field-grid two numeric-grid">
+              <label class="field"><span>自定义岗位间隔 秒</span><input id="betweenJobsSeconds" type="number" min="6" max="120" step="1"><small>仅在选择自定义时生效 最低6秒</small></label>
+              <label class="field"><span>文字后发附件 秒</span><input id="attachmentDelaySeconds" type="number" min="1.5" max="15" step="0.5"><small>文字发送证据确认后才发送附件</small></label>
             </div>
             <div class="switch-group">
               <label class="switch-line"><input id="sendImage" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>发送简历图片</b><small id="sendImagePolicyText">人工确认后随招呼语发送</small></span></label>
               <label class="switch-line"><input id="sendOnline" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>发送在线简历</b><small id="sendOnlinePolicyText">页面存在入口时执行</small></span></label>
+            </div>
+          </div>
+        </details>
+
+        <details class="module-card collapsible" data-collapsible="safety-settings" open>
+          <summary><span><b>安全调度与企业核验</b><small>统一限速 熔断 去重和第三方企业查询 Provider</small></span><i class="chevron"></i></summary>
+          <div class="module-body form-grid">
+            <div class="field-grid two numeric-grid">
+              <label class="field"><span>随机等待抖动 秒</span><input id="jitterSeconds" type="number" min="0" max="15" step="1"><small>在最低等待时间上增加随机延迟</small></label>
+              <label class="field"><span>连续失败熔断次数</span><input id="maxConsecutiveFailures" type="number" min="1" max="10" step="1"><small>验证码 403 429等异常会立即熔断</small></label>
+            </div>
+            <label class="field"><span>企业核验 Provider</span><select id="companyVerificationProvider"><option value="bridge">OpenClaw MCP桥接</option><option value="local">仅本地风险规则</option></select><small>正式企业查询API密钥保存在本地桥接中 不写入扩展</small></label>
+            <div class="field-grid two numeric-grid"><label class="field"><span>企业信息缓存 天</span><input id="companyVerificationCacheDays" type="number" min="1" max="90" step="1"></label><div class="safety-state-card"><b id="safetyStateTitle">安全调度正常</b><small id="safetyStateText">未触发熔断</small><button class="button button-secondary small" id="resetSafety" type="button">重置熔断</button></div></div>
+            <div class="switch-group">
+              <label class="switch-line"><input id="companyVerificationEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>启用企业风险核验</b><small>工商Provider不可用时自动降级为本地岗位风险规则</small></span></label>
+              <label class="switch-line"><input id="blockUnknownCompanies" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>阻止无法确认的企业</b><small>开启后未知企业不会进入投递队列</small></span></label>
+              <label class="switch-line"><input id="updateCheckEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>启用更新提醒</b><small>每6小时检查一次GitHub正式Release</small></span></label>
             </div>
           </div>
         </details>
@@ -336,6 +362,11 @@
             <div class="button-row"><button class="button button-secondary" id="testAi">测试 AI 连接</button><span class="inline-result" id="aiTestResult"></span></div>
           </div>
         </details>
+
+        <article class="module-card update-card">
+          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 1.7.0</small></div><span class="pill" id="updateVersionPill">1.7.0</span></div>
+          <div class="button-row"><button class="button button-secondary" id="checkUpdate" type="button">检查更新</button><button class="button button-primary" id="openUpdate" type="button" hidden>查看新版本</button></div>
+        </article>
 
         <article class="module-card diagnostic-card">
           <div class="module-title"><div><b>BOSS 页面诊断</b><small>检查搜索、岗位卡片和详情页适配状态</small></div></div>
@@ -362,8 +393,8 @@
           <div class="bridge-icon">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a8 8 0 108 8M12 8a4 4 0 104 4M12 12h8"/></svg>
           </div>
-          <div><strong>桌面桥接</strong><p>连接本机 OpenClaw 服务，扩展也可独立运行。</p></div>
-          <button class="button button-secondary small" id="checkBridge">检测连接</button>
+          <div><strong>桌面桥接</strong><p>支持 HTTP 和 Native Messaging 双通道 连接失败时可自动唤醒本地服务</p></div>
+          <button class="button button-secondary small" id="checkBridge">检测并修复</button>
         </div>
 
         <article class="module-card">
@@ -376,13 +407,19 @@
         </article>
 
         <article class="module-card report-card">
-          <div class="module-title"><div><b>求职日报</b><small>由本机桥接汇总</small></div><button class="text-button" id="loadBridgeReport">刷新日报</button></div>
+          <div class="module-title"><div><b>每日求职汇报</b><small>OpenClaw 按本机时间自动生成并通知</small></div><button class="text-button" id="loadBridgeReport">刷新日报</button></div>
+          <div class="field-grid two compact-settings">
+            <label class="switch-line compact-switch"><input id="dailyReportEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>每天自动汇报</b><small>保存到 ~/.jobclaw/reports</small></span></label>
+            <label class="field"><span>汇报时间</span><input id="dailyReportTime" type="time" value="20:30"></label>
+          </div>
+          <label class="switch-line compact-switch"><input id="dailyReportNotification" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>系统通知</b><small>macOS 通知中心显示当天投递摘要</small></span></label>
+          <div class="control-grid two-actions"><button class="button button-secondary" id="saveReportSettings">保存汇报设置</button><button class="button button-primary" id="generateBridgeReport">立即生成</button></div>
           <pre class="report-box" id="bridgeReport">尚未读取。</pre>
         </article>
 
         <details class="module-card collapsible" data-collapsible="bridge-diagnostic">
           <summary>
-            <span><b>桌面桥接诊断</b><small>状态、版本与本地数据库</small></span>
+            <span><b>桌面桥接诊断</b><small>连接通道 版本 日志和修复建议</small></span>
             <i class="chevron"></i>
           </summary>
           <div class="module-body">

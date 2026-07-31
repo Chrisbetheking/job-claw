@@ -7,7 +7,7 @@ const [common, background, content, html, sidepanel] = await Promise.all([
   readFile(`${root}/sidepanel.html`, 'utf8'),
   readFile(`${root}/sidepanel.js`, 'utf8')
 ]);
-for (const token of ['betweenJobsSeconds: 12', 'attachmentDelaySeconds: 4']) {
+for (const token of ['betweenJobsSeconds: 9', 'attachmentDelaySeconds: 3']) {
   if (!common.includes(token)) throw new Error(`安全节奏默认值缺失：${token}`);
 }
 for (const token of ['verify_message', '已暂停，未发送附件', 'newGreetingVisibleInChat', 'chatMessageSnapshot', 'await adapter.sendGreeting', 'await adapter.uploadResumeImage', 'activateSendButton', 'deliveryGreeting']) {

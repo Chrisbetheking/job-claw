@@ -24,7 +24,7 @@ for (const token of [
 }
 if (/slice\(0,\s*Math\.min\(48/.test(content)) throw new Error('UI22 不得再用招呼语前缀匹配整个页面');
 if (!content.includes("this.chatMessageNodes({ outgoingOnly: true })")) throw new Error('UI22 必须只在当前会话的发出消息中确认文字');
-if (!common.includes('betweenJobsSeconds: 12') || !common.includes('attachmentDelaySeconds: 4')) throw new Error('UI22 默认节奏未放慢');
+if (!common.includes('betweenJobsSeconds: 9') || !common.includes('attachmentDelaySeconds: 3')) throw new Error('UI22 正式版安全节奏默认值缺失');
 if (!background.includes('ui22StrictTranscriptMigration')) throw new Error('UI22 旧配置节奏迁移缺失');
 const parsedManifest = JSON.parse(manifest);
 if (!parsedManifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('UI22 内容脚本未注册');

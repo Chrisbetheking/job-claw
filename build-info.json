@@ -1,8 +1,15 @@
 {
-  "version": "1.2.37",
-  "versionName": "1.2.37 正式版",
-  "baseline": "JobClaw-Internal-v1.2.1-rc12.zip",
-  "baselineSha256": "10fef2a1c0fba966ee05e70fb80fd557e89361c8742207eef67daad39c86c77b",
-  "builtAt": "2026-07-24T15:57:40.470Z",
-  "release": "GitHub-ready beginner edition"
+  "version": "1.7.0",
+  "versionName": "1.7.0 Formal · Safe Mass Apply and OpenClaw Daily Report",
+  "baseline": "JobClaw v1.7.0",
+  "builtAt": "2026-07-31T06:14:50.292Z",
+  "release": "Formal Safe Mass Apply and OpenClaw Daily Report Release",
+  "sourceOfTruth": [
+    "source/src",
+    "source/public"
+  ],
+  "generatedArtifacts": [
+    "source/dist/chrome-extension",
+    "chrome-extension"
+  ]
 }

@@ -1,7 +1,7 @@
 {
   "name": "jobclaw-by-chris",
   "private": true,
-  "version": "1.3.0",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -13,6 +13,9 @@
     "test:regression": "node tests/run-regression.mjs",
     "test:all": "npm run build && node tests/validate.mjs && npm run test:unit && npm run test:integration && npm run test:regression && npm run check:manifest && npm run check:syntax && npm run scan:secrets && npm run check:release-sync",
     "test": "npm run test:all",
-    "check:release-sync": "node scripts/check-release-sync.mjs"
+    "check:release-sync": "node scripts/check-release-sync.mjs",
+    "release:sync": "node scripts/sync-release.mjs",
+    "release:metadata": "node scripts/generate-release-metadata.mjs",
+    "release:prepare": "npm run build && npm run release:sync && npm run release:metadata"
   }
 }

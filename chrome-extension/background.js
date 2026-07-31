@@ -2,9 +2,17 @@ import { DEFAULTS, safeClone, today, uniq } from './common.js';
 import { normalizeConversationIdentity, deriveConversationReservationKey, sameRecruiterReservation } from './lib/conversation-identity.js';
 import { TERMINAL_RUN_STATUSES, taskStageMeta } from './lib/task-state.js';
 import { rerankPending } from './lib/job-priority.js';
+import { computeRateLimitDecision, evaluateStrategy, normalizeStrategy, recordRateAction, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from './lib/safety-control.js';
+import { companyCacheKey, companyVerificationExpired, heuristicCompanyVerification, mergeCompanyVerification } from './lib/company-verifier.js';
+import { createHistoryEntry, findDuplicate } from './lib/deduplication.js';
+import { normalizeRelease } from './lib/update-checker.js';
 
 const BRIDGE_ENDPOINTS = ['http://127.0.0.1:17899', 'http://localhost:17899'];
-const EXPECTED_CONTENT_VERSION = '1.3.0';
+const NATIVE_BRIDGE_HOST = 'com.jobclaw.bridge';
+let lastBridgeSnapshotAt = 0;
+let bridgeUnavailableUntil = 0;
+let bridgeLastError = '';
+const EXPECTED_CONTENT_VERSION = '1.7.0';
 const CONTENT_SCRIPT_FILE = 'content-v37.js';
 const storage = {
   get: keys => chrome.storage.local.get(keys),
@@ -932,6 +940,66 @@ async function init() {
     };
     patch.v130SingleValidationMigration = true;
   }
+  if (!current.v170SafetyIntelligenceMigration) {
+    const baseConfig = patch.config || current.config || {};
+    const legacyTarget = Number(baseConfig.dailyTarget || 0);
+    const legacyDiscovery = Number(baseConfig.discoveryLimit || 0);
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      batchStrategy: normalizeStrategy(baseConfig.batchStrategy),
+      dryRun: Boolean(baseConfig.dryRun),
+      dailyTarget: legacyTarget <= 0 ? 30 : Math.min(150, legacyTarget),
+      discoveryLimit: legacyDiscovery <= 0 ? 150 : Math.min(800, legacyDiscovery),
+      betweenJobsSeconds: Math.max(6, Number(baseConfig.betweenJobsSeconds || 9)),
+      maxPerCompanyPerDay: Math.max(1, Math.min(12, Number(baseConfig.maxPerCompanyPerDay || 3))),
+      maxConsecutiveFailures: Math.max(1, Math.min(10, Number(baseConfig.maxConsecutiveFailures || 3))),
+      jitterSeconds: Math.max(0, Math.min(15, Number(baseConfig.jitterSeconds ?? 3))),
+      companyVerificationEnabled: baseConfig.companyVerificationEnabled !== false,
+      companyVerificationProvider: String(baseConfig.companyVerificationProvider || 'bridge'),
+      companyVerificationCacheDays: Math.max(1, Math.min(90, Number(baseConfig.companyVerificationCacheDays || 14))),
+      blockUnknownCompanies: Boolean(baseConfig.blockUnknownCompanies),
+      updateCheckEnabled: baseConfig.updateCheckEnabled !== false,
+      rateLimits: { ...DEFAULTS.config.rateLimits, ...(baseConfig.rateLimits || {}) }
+    };
+    patch.safetyState = { ...DEFAULTS.safetyState, ...(current.safetyState || {}) };
+    patch.companyVerificationCache = current.companyVerificationCache && typeof current.companyVerificationCache === 'object' ? current.companyVerificationCache : {};
+    patch.deliveryHistory = Array.isArray(current.deliveryHistory) ? current.deliveryHistory : [];
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '1.7.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      pendingApplyId: null,
+      activeRunId: null,
+      statusText: 'v1.7 安全投递引擎已升级 请检查限速和企业核验设置后重新开始'
+    };
+    patch.v170SafetyIntelligenceMigration = true;
+  }
+  if (!current.v170FormalReleaseMigration) {
+    const baseConfig = patch.config || current.config || {};
+    const migratedStrategy = normalizeStrategy(baseConfig.batchStrategy);
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      batchStrategy: migratedStrategy,
+      massApplyAnalysis: ['fast', 'ai'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'fast',
+      pacingPreset: ['conservative', 'standard', 'efficient', 'custom'].includes(baseConfig.pacingPreset) ? baseConfig.pacingPreset : 'standard',
+      dailyTarget: Math.max(1, Math.min(150, Number(baseConfig.dailyTarget || 30))),
+      discoveryLimit: Math.max(1, Math.min(800, Number(baseConfig.discoveryLimit || 150))),
+      betweenJobsSeconds: Math.max(6, Math.min(120, Number(baseConfig.betweenJobsSeconds || 9))),
+      attachmentDelaySeconds: Math.max(1.5, Math.min(15, Number(baseConfig.attachmentDelaySeconds || 3))),
+      maxPerCompanyPerDay: Math.max(1, Math.min(12, Number(baseConfig.maxPerCompanyPerDay || 3))),
+      queueWarmup: Math.max(1, Math.min(10, Number(baseConfig.queueWarmup || 4))),
+      dailyReportEnabled: baseConfig.dailyReportEnabled !== false,
+      dailyReportTime: /^\d{2}:\d{2}$/.test(String(baseConfig.dailyReportTime || '')) ? String(baseConfig.dailyReportTime) : '20:30',
+      dailyReportNotification: baseConfig.dailyReportNotification !== false,
+      rateLimits: { ...DEFAULTS.config.rateLimits, ...(baseConfig.rateLimits || {}) }
+    };
+    patch.safetyState = { ...DEFAULTS.safetyState, ...(current.safetyState || {}) };
+    patch.v170FormalReleaseMigration = true;
+  }
   if (Object.keys(patch).length) await storage.set(patch);
   const { stats } = await storage.get('stats');
   if (!stats || stats.date !== today()) {
@@ -940,6 +1008,9 @@ async function init() {
   await refreshBossTabsForRuntimeVersion();
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.alarms.create('jobclaw-tick', { periodInMinutes: 1 });
+  chrome.alarms.create('jobclaw-update-check', { periodInMinutes: 360 });
+  checkForUpdates(false).catch(() => {});
+  syncBridgeSnapshot(true).catch(() => {});
 }
 
 function publicState(all) {
@@ -1355,9 +1426,17 @@ async function sendToBoss(message) {
   return sendToBossTab(tab, message);
 }
 
+async function nativeBridge(path, body) {
+  if (!chrome.runtime?.sendNativeMessage) throw new Error('当前 Chrome 不支持 Native Messaging');
+  const response = await chrome.runtime.sendNativeMessage(NATIVE_BRIDGE_HOST, { path, body: body ?? null });
+  if (!response || response.ok === false) throw new Error(response?.error || '本地桥接没有返回结果');
+  const payload = response.payload && typeof response.payload === 'object' ? response.payload : response;
+  return { ...payload, _transport: 'native' };
+}
+
 async function bridge(path, body) {
   const failures = [];
-  const timeoutMs = path === '/parse-resume' ? 190000 : 8000;
+  const timeoutMs = path === '/parse-resume' ? 190000 : path === '/company/verify' ? 3500 : path === '/status' ? 3000 : 8000;
   for (const base of BRIDGE_ENDPOINTS) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1371,16 +1450,270 @@ async function bridge(path, body) {
         signal: controller.signal
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || `增强识别组件返回 HTTP ${response.status}`);
-      return payload;
+      if (!response.ok) throw new Error(payload.error || `本地桥接返回 HTTP ${response.status}`);
+      bridgeUnavailableUntil = 0;
+      bridgeLastError = '';
+      return { ...payload, _transport: 'http', _endpoint: base };
     } catch (error) {
-      failures.push(error?.name === 'AbortError' ? '连接超时' : String(error?.message || error));
+      failures.push(`${base} ${error?.name === 'AbortError' ? '连接超时' : String(error?.message || error)}`);
     } finally {
       clearTimeout(timeout);
     }
   }
-  const detail = failures.find(message => message && message !== 'Failed to fetch');
-  throw new Error(detail || '增强识别组件未启动');
+  try {
+    const payload = await nativeBridge(path, body);
+    bridgeUnavailableUntil = 0;
+    bridgeLastError = '';
+    return payload;
+  } catch (error) {
+    failures.push(`Native Messaging ${String(error?.message || error)}`);
+    bridgeLastError = String(error?.message || error);
+    if (path === '/company/verify') bridgeUnavailableUntil = Date.now() + 5 * 60 * 1000;
+  }
+  throw new Error(`OpenClaw 桌面桥接未连接。请双击“安装桌面桥接-mac.command”完成安装或修复。${failures.length ? ` 诊断：${failures.join('；')}` : ''}`);
+}
+
+async function diagnoseBridge() {
+  const attempts = [];
+  for (const base of BRIDGE_ENDPOINTS) {
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    try {
+      const response = await fetch(`${base}/status`, { cache: 'no-store', credentials: 'omit', signal: controller.signal });
+      const payload = await response.json().catch(() => ({}));
+      attempts.push({ transport: 'http', endpoint: base, ok: response.ok, elapsedMs: Date.now() - startedAt, status: response.status, payload });
+      if (response.ok) return { ok: true, transport: 'http', runtimeId: chrome.runtime.id, attempts, status: payload };
+    } catch (error) {
+      attempts.push({ transport: 'http', endpoint: base, ok: false, elapsedMs: Date.now() - startedAt, error: error?.name === 'AbortError' ? '连接超时' : String(error?.message || error) });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  try {
+    const status = await nativeBridge('/status');
+    attempts.push({ transport: 'native', host: NATIVE_BRIDGE_HOST, ok: true });
+    return { ok: true, transport: 'native', runtimeId: chrome.runtime.id, attempts, status };
+  } catch (error) {
+    attempts.push({ transport: 'native', host: NATIVE_BRIDGE_HOST, ok: false, error: String(error?.message || error) });
+  }
+  return {
+    ok: false,
+    runtimeId: chrome.runtime.id,
+    expectedRuntimeId: 'dkfilgjiooigjbollljdionbnnofekkh',
+    attempts,
+    fix: '退出旧桥接后 双击项目根目录的“安装桌面桥接-mac.command” 安装完成后回到扩展点击检测连接',
+    logPaths: ['~/.jobclaw/bridge.log', '~/.jobclaw/bridge-error.log']
+  };
+}
+
+function bridgeSnapshot(all = {}) {
+  const config = all.config || {};
+  const pending = Array.isArray(all.pending) ? all.pending : [];
+  const taskRuns = Array.isArray(all.taskRuns) ? all.taskRuns : [];
+  return {
+    ts: Date.now(),
+    stats: { ...(all.stats || {}) },
+    workflow: {
+      running: Boolean(all.workflow?.running),
+      paused: Boolean(all.workflow?.paused),
+      phase: String(all.workflow?.phase || 'idle'),
+      statusText: String(all.workflow?.statusText || '')
+    },
+    queue: {
+      waiting: pending.filter(item => ['pending', 'approved_queue', 'approved'].includes(item.status)).length,
+      sent: pending.filter(item => item.status === 'sent').length,
+      failed: pending.filter(item => item.status === 'failed').length
+    },
+    recentRuns: taskRuns.filter(() => true).slice(0, 30).map(run => ({
+      status: run.status,
+      stageLabel: run.stageLabel,
+      job: run.job ? { title: run.job.title || '', company: run.job.company || '' } : null,
+      updatedAt: run.updatedAt || run.completedAt || run.createdAt || 0
+    })),
+    config: {
+      batchStrategy: normalizeStrategy(config.batchStrategy),
+      massApplyAnalysis: config.massApplyAnalysis || 'fast',
+      pacingPreset: config.pacingPreset || 'standard',
+      dailyTarget: Number(config.dailyTarget || 30),
+      dailyReportEnabled: config.dailyReportEnabled !== false,
+      dailyReportTime: String(config.dailyReportTime || '20:30'),
+      dailyReportNotification: config.dailyReportNotification !== false
+    }
+  };
+}
+
+async function syncBridgeSnapshot(force = false) {
+  if (!force && Date.now() - lastBridgeSnapshotAt < 55 * 1000) return { skipped: true };
+  lastBridgeSnapshotAt = Date.now();
+  const snapshot = bridgeSnapshot(await storage.all());
+  return bridge('/sync', { snapshot });
+}
+
+async function enforceRateLimit(scope = 'discovery') {
+  const { config = {}, safetyState = {} } = await storage.get(['config', 'safetyState']);
+  const now = Date.now();
+  const decision = computeRateLimitDecision(config, safetyState, scope, now);
+  if (!decision.allowed) {
+    await patchWorkflow({ running: false, paused: true, statusText: decision.reason || '安全熔断已开启' });
+    return { ok: false, ...decision };
+  }
+  const reservedAt = now + Number(decision.waitMs || 0);
+  const nextState = recordRateAction(safetyState, scope, reservedAt, Number(decision.waitMs || 0) > 0);
+  await storage.set({ safetyState: nextState });
+  return { ok: true, ...decision, reservedAt };
+}
+
+async function applySafetyOutcome(outcome = {}) {
+  const { config = {}, safetyState = {} } = await storage.get(['config', 'safetyState']);
+  const next = recordSafetyOutcome(config, safetyState, outcome);
+  await storage.set({ safetyState: next });
+  if (next.circuitOpen) {
+    await patchWorkflow({
+      running: false,
+      paused: true,
+      phase: 'safety_stop',
+      pendingApplyId: null,
+      statusText: `安全熔断：${next.circuitReason || '连续任务失败'}`
+    });
+    await writeEvent('warning', '安全熔断已开启', { reason: next.circuitReason, failures: next.consecutiveFailures });
+    chrome.notifications.create(`jobclaw-safety-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'icon128.png',
+      title: 'JobClaw 已安全暂停',
+      message: next.circuitReason || '连续任务失败，请检查页面后手动恢复'
+    }).catch(() => {});
+  }
+  return next;
+}
+
+async function clearSafetyCircuit() {
+  const { safetyState = {} } = await storage.get('safetyState');
+  const next = resetSafetyCircuit(safetyState);
+  await storage.set({ safetyState: next });
+  await writeEvent('info', '安全熔断已重置');
+  return next;
+}
+
+async function verifyCompanyForJob(job = {}, force = false) {
+  const { config = {}, companyVerificationCache = {} } = await storage.get(['config', 'companyVerificationCache']);
+  const fallback = heuristicCompanyVerification(job);
+  if (config.companyVerificationEnabled === false) {
+    return { ...fallback, provider: 'disabled', status: 'disabled', verified: false, riskLevel: fallback.riskLevel === 'high' ? 'high' : 'unknown' };
+  }
+  const key = companyCacheKey(job.company);
+  const cached = companyVerificationCache[key];
+  if (!force && cached && !companyVerificationExpired(cached, config.companyVerificationCacheDays || 14)) {
+    return { ...cached, cacheHit: true };
+  }
+  let providerResult = null;
+  if (config.companyVerificationProvider !== 'local' && Date.now() < bridgeUnavailableUntil) {
+    providerResult = {
+      provider: 'bridge-cooldown',
+      status: 'unavailable',
+      verified: false,
+      riskLevel: 'unknown',
+      confidence: 0,
+      signals: [`OpenClaw暂不可用 已在本地快速降级 ${bridgeLastError || ''}`.trim()],
+      evidence: [],
+      checkedAt: Date.now()
+    };
+  }
+  if (config.companyVerificationProvider !== 'local' && !providerResult) {
+    const throttle = await enforceRateLimit('company');
+    if (throttle.ok && throttle.waitMs) await wait(throttle.waitMs);
+    try {
+      const response = await bridge('/company/verify', {
+        provider: config.companyVerificationProvider || 'bridge',
+        companyName: job.company || '',
+        job: {
+          title: job.title || '',
+          company: job.company || '',
+          location: job.location || '',
+          description: job.description || job.cardText || '',
+          url: job.url || ''
+        }
+      });
+      providerResult = response?.result || response;
+    } catch (error) {
+      providerResult = {
+        provider: 'bridge-unavailable',
+        status: 'unavailable',
+        verified: false,
+        riskLevel: 'unknown',
+        confidence: 0,
+        signals: [`企业数据源暂不可用：${error.message}`],
+        evidence: []
+      };
+    }
+  }
+  const merged = mergeCompanyVerification(providerResult || {}, fallback);
+  const nextCache = { ...companyVerificationCache, [key]: merged };
+  const entries = Object.entries(nextCache).sort((a, b) => Number(b[1]?.checkedAt || 0) - Number(a[1]?.checkedAt || 0)).slice(0, 500);
+  await storage.set({ companyVerificationCache: Object.fromEntries(entries) });
+  return { ...merged, cacheHit: false };
+}
+
+async function preflightJob(job = {}) {
+  const { config = {}, pending = [], deliveryHistory = [] } = await storage.get(['config', 'pending', 'deliveryHistory']);
+  const duplicate = findDuplicate(job, {
+    pending,
+    history: deliveryHistory,
+    maxPerCompanyPerDay: config.maxPerCompanyPerDay || 2,
+    date: today()
+  });
+  if (duplicate.duplicate) {
+    await changeStats({ duplicates: 1, blocked: 1 });
+    return { ok: true, blocked: true, category: 'duplicate', reason: duplicate.reason, duplicate };
+  }
+  const company = await verifyCompanyForJob(job);
+  const blockUnknown = Boolean(config.blockUnknownCompanies);
+  const blocked = company.riskLevel === 'high' || (blockUnknown && company.riskLevel === 'unknown');
+  await changeStats(blocked ? { blocked: 1 } : company.verified ? { verified: 1 } : {});
+  return {
+    ok: true,
+    blocked,
+    category: blocked ? 'company-risk' : 'accepted',
+    reason: blocked ? (company.signals?.[0] || '企业核验未通过') : '',
+    company,
+    duplicate
+  };
+}
+
+async function checkForUpdates(force = false) {
+  const currentVersion = chrome.runtime.getManifest().version;
+  const { config = {}, updateInfo = {} } = await storage.get(['config', 'updateInfo']);
+  if (config.updateCheckEnabled === false && !force) return updateInfo;
+  if (!force && Number(updateInfo.checkedAt || 0) && Date.now() - Number(updateInfo.checkedAt) < 6 * 60 * 60 * 1000) return updateInfo;
+  try {
+    const response = await fetch('https://api.github.com/repos/Chrisbetheking/job-claw/releases/latest', {
+      headers: { Accept: 'application/vnd.github+json' },
+      cache: 'no-store',
+      credentials: 'omit'
+    });
+    if (response.status === 404) {
+      const next = { ...DEFAULTS.updateInfo, currentVersion, checkedAt: Date.now(), error: '仓库暂未发布正式 Release' };
+      await storage.set({ updateInfo: next });
+      return next;
+    }
+    if (!response.ok) throw new Error(`GitHub Release HTTP ${response.status}`);
+    const next = normalizeRelease(await response.json(), currentVersion);
+    const wasAvailable = Boolean(updateInfo.available && updateInfo.latestVersion === next.latestVersion);
+    await storage.set({ updateInfo: next });
+    if (next.available && !wasAvailable) {
+      chrome.notifications.create(`jobclaw-update-${next.latestVersion}`, {
+        type: 'basic',
+        iconUrl: 'icon128.png',
+        title: `JobClaw ${next.latestVersion} 可更新`,
+        message: next.name || '发现新的正式版本'
+      }).catch(() => {});
+    }
+    return next;
+  } catch (error) {
+    const next = { ...updateInfo, currentVersion, checkedAt: Date.now(), error: error.message || '更新检查失败' };
+    await storage.set({ updateInfo: next });
+    return next;
+  }
 }
 
 function extractJson(raw) {
@@ -2211,13 +2544,43 @@ function normalizeApplicantGreeting(result, job, profile) {
   return raw.slice(0, 160);
 }
 
+function fastMassAnalysis(job, profile) {
+  const jobText = [job?.title, job?.description, job?.cardText].filter(Boolean).join('\n').toLowerCase();
+  const skills = normalizeStringList(profile?.facts?.skills, 20);
+  const directions = normalizeStringList(profile?.primaryDirections?.map(item => typeof item === 'string' ? item : item?.name), 8);
+  const matchedEvidence = [];
+  for (const skill of skills) {
+    const token = String(skill || '').trim();
+    if (token && jobText.includes(token.toLowerCase())) matchedEvidence.push(token);
+  }
+  const directionMatched = directions.some(item => item && jobText.includes(String(item).toLowerCase()));
+  const score = Math.max(25, Math.min(88, 35 + matchedEvidence.length * 9 + (directionMatched ? 15 : 0)));
+  return {
+    score,
+    decision: matchedEvidence.length || directionMatched ? 'recommend' : 'cautious',
+    hardBlocks: [],
+    strictHardBlocks: [],
+    matchedEvidence: matchedEvidence.slice(0, 8),
+    gaps: [],
+    risks: [],
+    reason: '安全海投快速模式 仅做基础排序 不因技能 年限 专业或学历差距直接拦截',
+    greeting: fallbackApplicantGreeting(job, profile),
+    analysisMode: 'local-mass-fast'
+  };
+}
+
 async function analyzeJob(job) {
   const { profile, resumeText, config } = await storage.get(['profile', 'resumeText', 'config']);
   if (!profile) throw new Error('请先生成职业画像');
+  const massMode = normalizeStrategy(config?.batchStrategy) === 'mass';
+  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile);
+  const strategyInstruction = massMode
+    ? '当前为安全海投模式。技能、技术栈、专业、学历偏差、经验年限不足和行业经历缺失通常只能放入gaps，不能直接判定reject。只有JD明确写出必须、仅限、不接受，且与用户真实条件发生不可改变冲突时，才写入hardBlocks。'
+    : '当前为精准投递模式。可以综合匹配度给出recommend、cautious或reject，但技能缺口仍应与真正不可改变的硬性冲突区分。';
   const result = await callModel([
     {
       role: 'system',
-      content: '你是为求职者服务的岗位匹配审查器，不是招聘方。用户是正在应聘岗位的求职者。任何能力、年限、项目和成果都不能超出简历事实。先判断学历、经验、地点等硬条件，再判断方向与技能。输出 JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting 是求职者发给招聘方/HR 的第一人称求职招呼语，50-110字，应使用“您好，我想应聘贵公司的……”口吻。严禁写成招聘方口吻，严禁出现“看到你的简历”“你的经历很匹配我们”“欢迎进一步沟通”“我们团队”“候选人”等表述；不得承诺薪资、到岗、年限或不存在的能力。'
+      content: `你是为求职者服务的岗位匹配审查器，不是招聘方。用户是正在应聘岗位的求职者。任何能力、年限、项目和成果都不能超出简历事实。${strategyInstruction} 输出 JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting 是求职者发给招聘方/HR 的第一人称求职招呼语，50-110字，应使用“您好，我想应聘贵公司的……”口吻。严禁写成招聘方口吻，严禁出现“看到你的简历”“你的经历很匹配我们”“欢迎进一步沟通”“我们团队”“候选人”等表述；不得承诺薪资、到岗、年限或不存在的能力。`
     },
     {
       role: 'user',
@@ -2228,10 +2591,11 @@ async function analyzeJob(job) {
   ]);
   result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
   result.greeting = normalizeApplicantGreeting(result, job, profile);
-  if (Array.isArray(result.hardBlocks) && result.hardBlocks.length) result.decision = 'reject';
-  if (result.score < Number(config?.minScore || 75) && result.decision === 'recommend') {
-    result.decision = 'cautious';
-  }
+  result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
+  result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
+  if (result.strictHardBlocks.length) result.decision = 'reject';
+  else if (massMode && result.decision === 'reject') result.decision = 'cautious';
+  if (!massMode && result.score < Number(config?.minScore || 75) && result.decision === 'recommend') result.decision = 'cautious';
   return result;
 }
 
@@ -2281,6 +2645,7 @@ function createTasks(profile, config, directionPlan) {
 async function dispatchNextAutoPending() {
   const { pending = [], workflow = {}, config = {} } = await storage.get(['pending', 'workflow', 'config']);
   if (config.executionMode !== 'auto') return { started: false, reason: 'not-auto' };
+  if (config.dryRun) return { started: false, reason: 'dry-run' };
   if (workflow.pendingApplyId) return { started: false, reason: 'busy', pendingApplyId: workflow.pendingApplyId };
   const ranked = rerankPending(pending);
   const candidate = ranked.find(entry => entry.status === 'approved_queue');
@@ -2305,7 +2670,7 @@ async function dispatchNextAutoPending() {
     running: true,
     paused: false,
     phase: 'apply',
-    statusText: `按匹配优先级投递：${candidate.job?.title || '岗位'}（AI ${candidate.analysis?.score || 0} 分）`,
+    statusText: `${normalizeStrategy(config.batchStrategy) === 'mass' ? '安全海投' : '精准投递'}：${candidate.job?.title || '岗位'}（队列优先级 ${candidate.priorityRank || 1}）`,
     pendingApplyId: candidate.id,
     activeRunId: run?.id || candidate.runId || null
   });
@@ -2322,20 +2687,20 @@ async function addPending(item) {
       job: item.job,
       analysis: item.analysis,
       searchTask: item.task,
-      status: config.executionMode === 'auto' ? 'queued' : 'waiting_review',
-      stage: config.executionMode === 'auto' ? 'queued' : 'waiting_review',
-      progress: config.executionMode === 'auto' ? 64 : 60,
-      stageLabel: config.executionMode === 'auto' ? '已进入自动排序队列' : '等待人工确认'
+      status: config.executionMode === 'auto' && !config.dryRun ? 'queued' : 'waiting_review',
+      stage: config.executionMode === 'auto' && !config.dryRun ? 'queued' : 'waiting_review',
+      progress: config.executionMode === 'auto' && !config.dryRun ? 64 : 60,
+      stageLabel: config.dryRun ? '模拟运行等待确认' : (config.executionMode === 'auto' ? '已进入自动排序队列' : '等待人工确认')
     });
   } else {
     run = await upsertTaskRun({
       job: item.job,
       analysis: item.analysis,
       searchTask: item.task,
-      status: config.executionMode === 'auto' ? 'queued' : 'waiting_review',
-      stage: config.executionMode === 'auto' ? 'queued' : 'waiting_review',
-      progress: config.executionMode === 'auto' ? 64 : 60,
-      stageLabel: config.executionMode === 'auto' ? '已进入自动排序队列' : '等待人工确认'
+      status: config.executionMode === 'auto' && !config.dryRun ? 'queued' : 'waiting_review',
+      stage: config.executionMode === 'auto' && !config.dryRun ? 'queued' : 'waiting_review',
+      progress: config.executionMode === 'auto' && !config.dryRun ? 64 : 60,
+      stageLabel: config.dryRun ? '模拟运行等待确认' : (config.executionMode === 'auto' ? '已进入自动排序队列' : '等待人工确认')
     });
   }
   const nextItem = {
@@ -2343,7 +2708,7 @@ async function addPending(item) {
     runId: run.id,
     id: item.id || crypto.randomUUID(),
     deliveryGreeting: String(item.deliveryGreeting || item.analysis?.greeting || '').trim(),
-    status: config.executionMode === 'auto' ? 'approved_queue' : 'pending',
+    status: config.executionMode === 'auto' && !config.dryRun ? 'approved_queue' : 'pending',
     createdAt: Date.now()
   };
   await upsertTaskRun({ id: run.id, pendingId: nextItem.id });
@@ -2355,10 +2720,27 @@ async function addPending(item) {
 }
 
 async function approvePending(id, greeting = '') {
-  const { pending = [] } = await storage.get('pending');
+  const { pending = [], config = {}, stats = {} } = await storage.get(['pending', 'config', 'stats']);
   const item = pending.find(entry => entry.id === id);
   if (!item) throw new Error('待确认岗位不存在');
   const lockedGreeting = String(greeting || item.deliveryGreeting || item.analysis?.greeting || '').trim();
+  if (config.dryRun) {
+    const completedAt = Date.now();
+    const next = pending.map(entry => entry.id === id ? {
+      ...entry,
+      deliveryGreeting: lockedGreeting,
+      analysis: { ...(entry.analysis || {}), greeting: lockedGreeting },
+      status: 'simulated',
+      completedAt
+    } : entry);
+    await storage.set({
+      pending: next,
+      stats: { ...stats, pending: next.filter(entry => entry.status === 'pending').length, simulated: Number(stats.simulated || 0) + 1 }
+    });
+    await updateTaskRunByPending(id, { status: 'success', stage: 'simulated', progress: 100, stageLabel: '模拟投递已通过', retryable: false, completedAt, result: 'dry-run' });
+    await writeEvent('success', '模拟投递已通过 未执行真实发送', { id, job: item.job });
+    return next.find(entry => entry.id === id);
+  }
   const updatedItem = {
     ...item,
     deliveryGreeting: lockedGreeting,
@@ -2369,7 +2751,6 @@ async function approvePending(id, greeting = '') {
   const next = pending.map(entry => entry.id === id ? updatedItem : entry);
   await storage.set({ pending: next });
   const pendingCount = next.filter(entry => entry.status === 'pending').length;
-  const { stats } = await storage.get('stats');
   await storage.set({ stats: { ...stats, pending: pendingCount } });
   const run = await updateTaskRunByPending(id, {
     status: 'running',
@@ -2394,16 +2775,26 @@ async function approvePending(id, greeting = '') {
 }
 
 async function approveAllPending() {
-  const { pending = [] } = await storage.get('pending');
+  const { pending = [], config = {}, stats = {} } = await storage.get(['pending', 'config', 'stats']);
   const candidates = rerankPending(pending).filter(entry => entry.status === 'pending');
   if (!candidates.length) return { count: 0 };
+  if (config.dryRun) {
+    const completedAt = Date.now();
+    const ids = new Set(candidates.map(entry => entry.id));
+    const next = pending.map(entry => ids.has(entry.id) ? { ...entry, status: 'simulated', completedAt } : entry);
+    await storage.set({ pending: next, stats: { ...stats, pending: 0, simulated: Number(stats.simulated || 0) + candidates.length } });
+    for (const candidate of candidates) {
+      await updateTaskRunByPending(candidate.id, { status: 'success', stage: 'simulated', progress: 100, stageLabel: '模拟投递已通过', retryable: false, completedAt, result: 'dry-run' });
+    }
+    await writeEvent('success', `已完成${candidates.length}个岗位的模拟投递 未执行真实发送`);
+    return { count: candidates.length, simulated: true };
+  }
   const ids = new Set(candidates.map(entry => entry.id));
   const next = pending.map(entry => ids.has(entry.id)
     ? { ...entry, status: 'approved_queue', approvedAt: Date.now() }
     : entry);
   const first = candidates[0];
   await storage.set({ pending: next });
-  const { stats } = await storage.get('stats');
   await storage.set({ stats: { ...stats, pending: 0 } });
   for (const [index, candidate] of candidates.entries()) {
     await updateTaskRunByPending(candidate.id, {
@@ -2533,10 +2924,15 @@ chrome.runtime.onStartup.addListener(init);
 init();
 
 chrome.alarms.onAlarm.addListener(async alarm => {
+  if (alarm.name === 'jobclaw-update-check') {
+    await checkForUpdates(false).catch(() => {});
+    return;
+  }
   if (alarm.name !== 'jobclaw-tick') return;
   const { workflow } = await storage.get('workflow');
   if (workflow?.running && !workflow.paused) sendToBoss({ type: 'RUN' }).catch(() => {});
   handleBridgeCommands();
+  syncBridgeSnapshot(false).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
@@ -2548,6 +2944,52 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         if (!/^https:\/\/(?:www|app)\.zhipin\.com\//i.test(url)) throw new Error('可信输入只能用于当前 BOSS 页面');
         const result = await trustedChatInput(tabId, message);
         reply({ ok: true, ...result });
+        break;
+      }
+      case 'RATE_LIMIT': {
+        reply(await enforceRateLimit(message.scope || 'discovery'));
+        break;
+      }
+      case 'SAFETY_OUTCOME': {
+        const state = await applySafetyOutcome({ ok: message.ok !== false, reason: message.reason || '' });
+        reply({ ok: true, state });
+        break;
+      }
+      case 'RESET_SAFETY': {
+        reply({ ok: true, state: await clearSafetyCircuit() });
+        break;
+      }
+      case 'JOB_PREFLIGHT': {
+        reply(await preflightJob(message.job || {}));
+        break;
+      }
+      case 'VERIFY_COMPANY': {
+        reply({ ok: true, result: await verifyCompanyForJob(message.job || {}, Boolean(message.force)) });
+        break;
+      }
+      case 'EVALUATE_STRATEGY': {
+        const { config = {} } = await storage.get('config');
+        const result = evaluateStrategy({
+          strategy: config.batchStrategy,
+          score: message.score,
+          minScore: config.minScore,
+          riskLevel: message.riskLevel || 'unknown',
+          verified: Boolean(message.verified),
+          decision: message.decision || 'cautious',
+          hardBlocks: message.hardBlocks || []
+        });
+        reply({ ok: true, result });
+        break;
+      }
+      case 'CHECK_UPDATE': {
+        reply({ ok: true, result: await checkForUpdates(Boolean(message.force)) });
+        break;
+      }
+      case 'OPEN_UPDATE': {
+        const { updateInfo = {} } = await storage.get('updateInfo');
+        const url = String(message.url || updateInfo.url || 'https://github.com/Chrisbetheking/job-claw/releases');
+        await chrome.tabs.create({ url });
+        reply({ ok: true });
         break;
       }
       case 'GET_STATE':
@@ -2565,12 +3007,33 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
             : oldKey
         };
         incoming.executionMode = incoming.executionMode === 'auto' ? 'auto' : 'review';
-        incoming.dailyTarget = Math.max(1, Math.min(300, Number(incoming.dailyTarget || config?.dailyTarget || 150)));
-        incoming.discoveryLimit = 0;
+        incoming.batchStrategy = normalizeStrategy(incoming.batchStrategy || config?.batchStrategy || 'precise');
+        incoming.massApplyAnalysis = ['fast', 'ai'].includes(incoming.massApplyAnalysis) ? incoming.massApplyAnalysis : (config?.massApplyAnalysis || 'fast');
+        incoming.pacingPreset = ['conservative', 'standard', 'efficient', 'custom'].includes(incoming.pacingPreset) ? incoming.pacingPreset : (config?.pacingPreset || 'standard');
+        incoming.dryRun = Boolean(incoming.dryRun);
+        incoming.dailyTarget = Math.max(1, Math.min(150, Number(incoming.dailyTarget || config?.dailyTarget || 30)));
+        incoming.discoveryLimit = Math.max(1, Math.min(800, Number(incoming.discoveryLimit || config?.discoveryLimit || 150)));
+        const presetDelay = { conservative: 15, standard: 9, efficient: 6 }[incoming.pacingPreset];
+        incoming.betweenJobsSeconds = Math.max(6, Math.min(120, Number(presetDelay || incoming.betweenJobsSeconds || config?.betweenJobsSeconds || 9)));
+        incoming.attachmentDelaySeconds = Math.max(1.5, Math.min(15, Number(incoming.attachmentDelaySeconds || config?.attachmentDelaySeconds || 3)));
+        incoming.maxPerCompanyPerDay = Math.max(1, Math.min(12, Number(incoming.maxPerCompanyPerDay || config?.maxPerCompanyPerDay || 3)));
+        incoming.queueWarmup = Math.max(1, Math.min(10, Number(incoming.queueWarmup || config?.queueWarmup || 4)));
+        incoming.maxConsecutiveFailures = Math.max(1, Math.min(10, Number(incoming.maxConsecutiveFailures || config?.maxConsecutiveFailures || 3)));
+        incoming.jitterSeconds = Math.max(0, Math.min(15, Number(incoming.jitterSeconds ?? config?.jitterSeconds ?? 3)));
+        incoming.companyVerificationEnabled = incoming.companyVerificationEnabled !== false;
+        incoming.companyVerificationProvider = String(incoming.companyVerificationProvider || config?.companyVerificationProvider || 'bridge');
+        incoming.companyVerificationCacheDays = Math.max(1, Math.min(90, Number(incoming.companyVerificationCacheDays || config?.companyVerificationCacheDays || 14)));
+        incoming.blockUnknownCompanies = Boolean(incoming.blockUnknownCompanies);
+        incoming.updateCheckEnabled = incoming.updateCheckEnabled !== false;
+        incoming.dailyReportEnabled = incoming.dailyReportEnabled !== false;
+        incoming.dailyReportTime = /^\d{2}:\d{2}$/.test(String(incoming.dailyReportTime || '')) ? String(incoming.dailyReportTime) : (config?.dailyReportTime || '20:30');
+        incoming.dailyReportNotification = incoming.dailyReportNotification !== false;
+        incoming.rateLimits = { ...DEFAULTS.config.rateLimits, ...(config?.rateLimits || {}), ...(incoming.rateLimits || {}), deliveryMs: Math.max(6000, Number(incoming.betweenJobsSeconds || 9) * 1000), attachmentMs: Math.max(1500, Number(incoming.attachmentDelaySeconds || 3) * 1000) };
         incoming.model.baseUrl = String(incoming.model.baseUrl || 'https://api.deepseek.com').trim();
         incoming.model.model = String(incoming.model.model || 'deepseek-v4-pro').trim();
         await storage.set({ config: { ...(config || {}), ...incoming } });
         await writeEvent('info', '设置已保存');
+        syncBridgeSnapshot(true).catch(() => {});
         reply({ ok: true });
         break;
       }
@@ -2777,6 +3240,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         break;
       }
       case 'START': {
+        const safety = await storage.get('safetyState');
+        if (safety.safetyState?.circuitOpen) throw new Error(`安全熔断未重置：${safety.safetyState.circuitReason || '请先检查页面状态'}`);
         const stored = await storage.get(['profile', 'profileDraft', 'resumeText', 'config', 'directionPlan']);
         let profile = stored.profile;
         const config = stored.config;
@@ -2991,7 +3456,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         reply({ ok: true, ...(await skipPendingTask(message.id, message.reason, message.stageLabel)) });
         break;
       case 'APPLY_COMPLETE': {
-        const { pending = [], config = {}, stats = {}, chatDeliveryLedger = {}, chatTransition = null } = await storage.get(['pending', 'config', 'stats', 'chatDeliveryLedger', 'chatTransition']);
+        const { pending = [], config = {}, stats = {}, chatDeliveryLedger = {}, chatTransition = null, deliveryHistory = [] } = await storage.get(['pending', 'config', 'stats', 'chatDeliveryLedger', 'chatTransition', 'deliveryHistory']);
         const completedAt = Date.now();
         let completedItem = null;
         let next = pending.map(entry => {
@@ -3021,7 +3486,11 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           };
         }
         const nextTransition = chatTransition?.pendingId === message.id ? null : chatTransition;
-        await storage.set({ pending: next, stats: updatedStats, chatDeliveryLedger: nextLedger, chatTransition: nextTransition });
+        const nextHistory = message.ok && completedItem?.job
+          ? [createHistoryEntry(completedItem.job, 'sent', completedAt, { pendingId: message.id, runId: completedItem.runId || '' }), ...deliveryHistory].slice(0, 2000)
+          : deliveryHistory;
+        await storage.set({ pending: next, stats: updatedStats, chatDeliveryLedger: nextLedger, chatTransition: nextTransition, deliveryHistory: nextHistory });
+        const safetyAfter = await applySafetyOutcome({ ok: Boolean(message.ok), reason: message.error || (message.ok ? '' : '投递失败') });
         const completedRun = await updateTaskRunByPending(message.id, message.ok
           ? {
               status: 'success', stage: 'success', progress: 100, stageLabel: '投递成功', error: '',
@@ -3039,6 +3508,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           stage: message.stage || '',
           error: message.error || ''
         });
+        if (safetyAfter.circuitOpen) {
+          reply({ ok: true, circuitOpen: true, reason: safetyAfter.circuitReason });
+          break;
+        }
 
         const validationPending = message.ok
           && config.executionMode === 'auto'
@@ -3065,7 +3538,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           break;
         }
 
-        if (updatedStats.sent >= Number(config.dailyTarget || 150)) {
+        if (updatedStats.sent >= Number(config.dailyTarget || 30)) {
           await patchWorkflow({ running: false, paused: true, pendingApplyId: null, activeRunId: null, phase: 'idle', statusText: `已完成今日 ${updatedStats.sent} 次成功投递` });
           reply({ ok: true, targetReached: true });
           break;
@@ -3130,6 +3603,15 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       case 'BRIDGE_STATUS':
         try { reply({ ok: true, result: await bridge('/status') }); }
         catch (error) { reply({ ok: false, error: error.message }); }
+        break;
+      case 'BRIDGE_DIAGNOSE':
+        reply({ ok: true, result: await diagnoseBridge() });
+        break;
+      case 'BRIDGE_REPORT_NOW':
+        try {
+          await syncBridgeSnapshot(true);
+          reply({ ok: true, result: await bridge('/report/generate', { force: true }) });
+        } catch (error) { reply({ ok: false, error: error.message }); }
         break;
       case 'BRIDGE_REPORT':
         try { reply({ ok: true, result: await bridge('/report') }); }

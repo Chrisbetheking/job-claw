@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const manifest = JSON.parse(await readFile('public/manifest.json', 'utf8'));
 assert.equal(manifest.manifest_version, 3);
-assert.equal(manifest.version, '1.3.0');
+assert.equal(manifest.version, '1.7.0');
 assert.equal(manifest.background?.type, 'module');
 assert.equal(manifest.side_panel?.default_path, 'sidepanel.html');
 assert.ok(manifest.content_scripts?.some(item => item.js?.includes('content-v37.js')));

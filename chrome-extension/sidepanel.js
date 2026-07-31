@@ -8,7 +8,10 @@ const PROFILE_FORM_IDS = [
 ];
 const SETTINGS_FORM_IDS = [
   'locations', 'types', 'experience', 'degree', 'salary', 'minScore',
-  'dailyTarget', 'betweenJobsSeconds', 'attachmentDelaySeconds', 'sendImage', 'sendOnline', 'baseUrl', 'modelName', 'apiKey'
+  'batchStrategy', 'massApplyAnalysis', 'pacingPreset', 'queueWarmup', 'dryRun', 'dailyTarget', 'discoveryLimit', 'maxPerCompanyPerDay',
+  'betweenJobsSeconds', 'attachmentDelaySeconds', 'jitterSeconds', 'maxConsecutiveFailures',
+  'companyVerificationProvider', 'companyVerificationCacheDays', 'companyVerificationEnabled',
+  'blockUnknownCompanies', 'updateCheckEnabled', 'dailyReportEnabled', 'dailyReportTime', 'dailyReportNotification', 'sendImage', 'sendOnline', 'baseUrl', 'modelName', 'apiKey'
 ];
 const FORM_IDS = new Set(['resumeText', ...PROFILE_FORM_IDS, ...SETTINGS_FORM_IDS]);
 const dirtyFields = new Set();
@@ -687,6 +690,11 @@ function createQueueItem(item) {
   const reason = document.createElement('div');
   reason.className = 'queue-reason';
   reason.textContent = item.analysis?.reason || 'AI 已判定为推荐岗位。';
+  const verification = item.job?.companyVerification || {};
+  const risk = document.createElement('div');
+  risk.className = `queue-risk risk-${verification.riskLevel || 'unknown'}`;
+  const riskLabel = { low: '低风险', medium: '需注意', high: '高风险', unknown: '待核验' }[verification.riskLevel] || '待核验';
+  risk.textContent = `企业核验 ${riskLabel}${verification.provider ? ` · ${verification.provider}` : ''}${verification.signals?.[0] ? ` · ${verification.signals[0]}` : ''}`;
   const greetingWrap = document.createElement('label');
   greetingWrap.className = 'queue-greeting-wrap';
   const greetingLabel = document.createElement('span');
@@ -711,7 +719,7 @@ function createQueueItem(item) {
   });
   const approve = document.createElement('button');
   approve.className = 'button button-primary';
-  approve.textContent = '确认沟通';
+  approve.textContent = state.config?.dryRun ? '记录模拟通过' : '确认沟通';
   approve.addEventListener('click', async () => {
     approve.disabled = true;
     const result = await send('APPROVE', { id: item.id, greeting: greeting.value.trim() });
@@ -724,7 +732,7 @@ function createQueueItem(item) {
     await refresh({ forms: false });
   });
   actions.append(reject, approve);
-  card.append(head, reason, greetingWrap, actions);
+  card.append(head, reason, risk, greetingWrap, actions);
   return card;
 }
 
@@ -739,9 +747,11 @@ function renderPending(items) {
   if (!pending.length) {
     const empty = document.createElement('div');
     empty.className = 'queue-empty';
-    empty.textContent = mode === 'auto'
-      ? '全自动投递已开启。达到推荐分数的岗位会直接以你的求职者身份联系招聘方，结果会记录在运行日志中。'
-      : '暂无待确认岗位。启动筛选后，AI 推荐岗位会出现在这里，你可以修改招呼语后逐条或批量确认。';
+    empty.textContent = state.config?.dryRun
+      ? '模拟运行已开启。系统会完成采集 企业核验 AI分析和队列预览 但不会发送任何消息。'
+      : mode === 'auto'
+        ? '全自动投递已开启。达到策略要求的岗位会在安全限速下联系招聘方，结果会记录在运行日志中。'
+        : '暂无待确认岗位。启动筛选后，AI 推荐岗位会出现在这里，你可以修改招呼语后逐条或批量确认。';
     container.append(empty);
   } else {
     for (const item of pending) container.append(createQueueItem(item));
@@ -901,9 +911,12 @@ function renderExecutionMode() {
   }
   setText('modeChip', auto ? '全自动投递' : '人工确认');
   setText('settingsModePill', auto ? '全自动投递' : '人工确认');
-  setText('modePolicyText', auto
-    ? '达到推荐分数的岗位会自动以你的应聘者身份发送求职招呼语；验证、异常或事实不确定时自动暂停。'
-    : 'AI 负责筛选和生成求职招呼语，发送前由你逐条或批量确认。');
+  const strategyLabel = state.config?.batchStrategy === 'mass' ? '安全海投' : '精准投递';
+  setText('modePolicyText', state.config?.dryRun
+    ? `当前为模拟运行 · ${strategyLabel} 不会执行真实发送`
+    : auto
+      ? `${strategyLabel}已开启 ${strategyLabel === '安全海投' ? '只排除明确硬性冲突 重复和高风险岗位' : '按匹配度优先筛选'} 发送始终单线程并受自适应限速保护`
+      : `${strategyLabel}已开启 AI完成筛选和企业核验后 由你逐条或批量确认`);
   setText('messageEyebrow', auto ? '自动投递记录' : '人工确认');
   setText('messageHeading', auto ? '投递与消息' : '待确认岗位');
   setText('messageSubtitle', auto ? '达标岗位自动联系招聘方，异常岗位仍会保留给你处理' : 'AI 推荐后由你决定是否以应聘者身份沟通');
@@ -991,6 +1004,14 @@ function renderDynamic() {
   renderPending(state.pending);
   renderEvents('homeEvents', state.events);
   renderEvents('messageEvents', state.events);
+  const safety = state.safetyState || {};
+  setText('safetyStateTitle', safety.circuitOpen ? '安全熔断已开启' : '安全调度正常');
+  setText('safetyStateText', safety.circuitOpen ? (safety.circuitReason || '请检查页面后重置') : `连续失败 ${Number(safety.consecutiveFailures || 0)} · 自适应降速 ${Number(safety.backoffLevel || 0)} 级 · 已限速 ${Number(safety.totalThrottled || 0)} 次`);
+  $('resetSafety')?.toggleAttribute('disabled', !safety.circuitOpen && !Number(safety.consecutiveFailures || 0));
+  const update = state.updateInfo || {};
+  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '1.7.0'));
+  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '1.7.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
+  if ($('openUpdate')) $('openUpdate').hidden = !update.available;
   updateUnsavedIndicators();
 }
 
@@ -1018,9 +1039,26 @@ function renderForms(force = false) {
   setFieldValue('degree', (config.degrees || []).join('，'), force);
   setFieldValue('salary', config.salary || '不限', force);
   setFieldValue('minScore', config.minScore ?? 75, force);
-  setFieldValue('dailyTarget', config.dailyTarget ?? 150, force);
-  setFieldValue('betweenJobsSeconds', config.betweenJobsSeconds ?? 12, force);
+  setFieldValue('batchStrategy', ['mass', 'explore', 'balanced'].includes(config.batchStrategy) ? 'mass' : 'precise', force);
+  setFieldValue('massApplyAnalysis', config.massApplyAnalysis || 'fast', force);
+  setFieldValue('pacingPreset', config.pacingPreset || 'standard', force);
+  setFieldValue('queueWarmup', config.queueWarmup ?? 4, force);
+  setFieldValue('dryRun', Boolean(config.dryRun), force);
+  setFieldValue('dailyTarget', config.dailyTarget ?? 30, force);
+  setFieldValue('discoveryLimit', config.discoveryLimit ?? 100, force);
+  setFieldValue('maxPerCompanyPerDay', config.maxPerCompanyPerDay ?? 2, force);
+  setFieldValue('betweenJobsSeconds', config.betweenJobsSeconds ?? 15, force);
   setFieldValue('attachmentDelaySeconds', config.attachmentDelaySeconds ?? 4, force);
+  setFieldValue('jitterSeconds', config.jitterSeconds ?? 4, force);
+  setFieldValue('maxConsecutiveFailures', config.maxConsecutiveFailures ?? 3, force);
+  setFieldValue('companyVerificationProvider', config.companyVerificationProvider || 'bridge', force);
+  setFieldValue('companyVerificationCacheDays', config.companyVerificationCacheDays ?? 14, force);
+  setFieldValue('companyVerificationEnabled', config.companyVerificationEnabled !== false, force);
+  setFieldValue('blockUnknownCompanies', Boolean(config.blockUnknownCompanies), force);
+  setFieldValue('updateCheckEnabled', config.updateCheckEnabled !== false, force);
+  setFieldValue('dailyReportEnabled', config.dailyReportEnabled !== false, force);
+  setFieldValue('dailyReportTime', config.dailyReportTime || '20:30', force);
+  setFieldValue('dailyReportNotification', config.dailyReportNotification !== false, force);
   setFieldValue('sendImage', config.sendResumeImage !== false, force);
   setFieldValue('sendOnline', Boolean(config.sendOnlineResume), force);
   setFieldValue('baseUrl', model.baseUrl || 'https://api.deepseek.com', force);
@@ -1536,11 +1574,27 @@ async function saveSettings() {
   const config = {
     ...old,
     executionMode: old.executionMode === 'auto' ? 'auto' : 'review',
-    dailyTarget: Number($('dailyTarget').value || 150),
-    discoveryLimit: 0,
+    batchStrategy: $('batchStrategy').value || 'precise',
+    massApplyAnalysis: $('massApplyAnalysis').value || 'fast',
+    pacingPreset: $('pacingPreset').value || 'standard',
+    queueWarmup: Number($('queueWarmup').value || 4),
+    dryRun: $('dryRun').checked,
+    dailyTarget: Number($('dailyTarget').value || 30),
+    discoveryLimit: Number($('discoveryLimit').value || 150),
+    maxPerCompanyPerDay: Number($('maxPerCompanyPerDay').value || 3),
     minScore: Number($('minScore').value || 75),
-    betweenJobsSeconds: Math.max(3, Math.min(30, Number($('betweenJobsSeconds').value || 12))),
-    attachmentDelaySeconds: Math.max(1, Math.min(10, Number($('attachmentDelaySeconds').value || 4))),
+    betweenJobsSeconds: Math.max(6, Math.min(120, Number($('betweenJobsSeconds').value || 9))),
+    attachmentDelaySeconds: Math.max(1.5, Math.min(15, Number($('attachmentDelaySeconds').value || 3))),
+    jitterSeconds: Math.max(0, Math.min(15, Number($('jitterSeconds').value || 3))),
+    maxConsecutiveFailures: Math.max(1, Math.min(10, Number($('maxConsecutiveFailures').value || 3))),
+    companyVerificationProvider: $('companyVerificationProvider').value || 'bridge',
+    companyVerificationCacheDays: Number($('companyVerificationCacheDays').value || 14),
+    companyVerificationEnabled: $('companyVerificationEnabled').checked,
+    blockUnknownCompanies: $('blockUnknownCompanies').checked,
+    updateCheckEnabled: $('updateCheckEnabled').checked,
+    dailyReportEnabled: $('dailyReportEnabled').checked,
+    dailyReportTime: $('dailyReportTime').value || '20:30',
+    dailyReportNotification: $('dailyReportNotification').checked,
     targetLocations: csv($('locations').value),
     employmentTypes: csv($('types').value),
     experiences: csv($('experience').value),
@@ -1748,6 +1802,23 @@ function bindActions() {
   });
 
   $('saveSettings').addEventListener('click', saveSettings);
+  $('resetSafety').addEventListener('click', async () => {
+    const result = await send('RESET_SAFETY');
+    showToast(result.ok ? '安全熔断已重置' : (result.error || '重置失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('checkUpdate').addEventListener('click', async () => {
+    const button = $('checkUpdate');
+    setBusy(button, true, '检查中…', '检查更新');
+    const result = await send('CHECK_UPDATE', { force: true });
+    setBusy(button, false, '', '检查更新');
+    showToast(result.ok ? (result.result?.available ? `发现新版本 ${result.result.latestVersion}` : (result.result?.error || '当前未发现新版本')) : (result.error || '检查失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('openUpdate').addEventListener('click', async () => {
+    const result = await send('OPEN_UPDATE');
+    if (!result.ok) showToast(result.error || '无法打开更新页面', true);
+  });
   $('testAi').addEventListener('click', async () => {
     await saveSettings();
     setText('aiTestResult', '测试中…');
@@ -1777,6 +1848,14 @@ function bindActions() {
 
   $('checkBridge').addEventListener('click', checkBridge);
   $('loadBridgeReport').addEventListener('click', loadBridgeReport);
+  $('saveReportSettings').addEventListener('click', saveSettings);
+  $('generateBridgeReport').addEventListener('click', async () => {
+    await saveSettings();
+    const result = await send('BRIDGE_REPORT_NOW');
+    setText('bridgeReport', result.ok ? (result.result?.report || JSON.stringify(result.result, null, 2)) : result.error);
+    showToast(result.ok ? 'OpenClaw 日报已生成' : result.error, !result.ok);
+    await checkBridge();
+  });
   for (const button of document.querySelectorAll('[data-bridge-command]')) {
     button.addEventListener('click', async () => {
       const result = await send('BRIDGE_COMMAND', { command: button.dataset.bridgeCommand });
@@ -1799,12 +1878,15 @@ async function ensureSavedResumeHasProfile() {
 }
 
 async function checkBridge() {
-  const result = await send('BRIDGE_STATUS');
-  setText('bridgeDiagnostic', JSON.stringify(result.ok ? result.result : { ok: false, error: result.error }, null, 2));
+  const result = await send('BRIDGE_DIAGNOSE');
+  const diagnostic = result.ok ? result.result : { ok: false, error: result.error };
+  setText('bridgeDiagnostic', JSON.stringify(diagnostic, null, 2));
+  const connected = Boolean(result.ok && diagnostic?.ok);
   const pill = $('bridgePill');
-  pill.textContent = result.ok ? '已连接' : '未连接';
-  pill.classList.toggle('accent', result.ok);
-  return result;
+  pill.textContent = connected ? `已连接 · ${diagnostic.transport === 'native' ? 'Native' : 'HTTP'}` : '未连接';
+  pill.classList.toggle('accent', connected);
+  if (!connected && diagnostic?.fix) showToast(diagnostic.fix, true);
+  return { ok: connected, result: diagnostic };
 }
 
 async function loadBridgeReport() {
