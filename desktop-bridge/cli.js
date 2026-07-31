@@ -11,6 +11,12 @@ let route = '/status';
 let body = null;
 
 if (args[0] === 'report') route = '/report';
+if (args[0] === 'report-now') {
+  method = 'POST';
+  route = '/report/generate';
+  body = JSON.stringify({ force: true, notify: args[1] !== '--silent' });
+}
+if (args[0] === 'report-status') route = '/report/status';
 if (args[0] === 'control') {
   method = 'POST';
   route = '/command';
@@ -20,7 +26,7 @@ if (args[0] === 'control') {
 const request = http.request({
   host: '127.0.0.1',
   port: config.port,
-  path: `${route}?token=${config.token}`,
+  path: route,
   method,
   headers: { 'Content-Type': 'application/json' }
 }, response => {

@@ -1276,3 +1276,25 @@ details[open] .chevron { margin-top: 4px; transform: rotate(225deg); }
 .readiness-row.is-warning small {
   color: #8b651f;
 }
+
+/* v1.7 安全智能层 */
+.field select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line, #d7dce5);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  color: inherit;
+  padding: 0 12px;
+  font: inherit;
+}
+.compact-settings { margin-top: 14px; align-items: stretch; }
+.compact-switch { min-height: 78px; border: 1px solid var(--line, #d7dce5); border-radius: 14px; padding: 12px; }
+.safety-state-card { display: grid; gap: 6px; align-content: start; border: 1px solid var(--line, #d7dce5); border-radius: 14px; padding: 12px; background: var(--surface-soft, #f7f8fb); }
+.safety-state-card small { color: var(--muted, #687083); line-height: 1.5; }
+.queue-risk { margin-top: 8px; padding: 8px 10px; border-radius: 10px; font-size: 12px; line-height: 1.45; background: #f3f4f6; color: #4b5563; }
+.queue-risk.risk-low { background: #ecfdf3; color: #087443; }
+.queue-risk.risk-medium { background: #fff7e6; color: #9a5b00; }
+.queue-risk.risk-high { background: #fff0f0; color: #b42318; }
+.queue-risk.risk-unknown { background: #f4f1ff; color: #6146a8; }
+.update-card .button-row { margin-top: 12px; }

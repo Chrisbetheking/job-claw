@@ -16,7 +16,7 @@ for (const token of [
   if (!content.includes(token)) throw new Error(`外部网申跳过逻辑缺失：${token}`);
 }
 
-const extractionIndex = content.indexOf('const job = adapter.extractJob(card);');
+const extractionIndex = Math.max(content.indexOf('const job = adapter.extractJob(card);'), content.indexOf('let job = adapter.extractJob(card);'));
 const externalIndex = content.indexOf('const externalApplication = adapter.externalApplicationInfo();', extractionIndex);
 const aiIndex = content.indexOf("const ai = await send('AI_JOB'", extractionIndex);
 if (!(extractionIndex >= 0 && externalIndex > extractionIndex && aiIndex > externalIndex)) {

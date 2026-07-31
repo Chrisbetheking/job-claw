@@ -4,7 +4,7 @@ const data = {
   ui10UnlimitedV4Migration: true,
   ui12ProfileDraftMigration: true,
   ui18TaskProgressMigration: true,
-  bossContentRuntimeVersion: '1.3.0',
+  bossContentRuntimeVersion: '1.7.0',
   config: { executionMode: 'auto', dailyTarget: 150, model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-pro' } },
   stats: { date: new Date().toISOString().slice(0, 10), sent: 0, discovered: 1, analyzed: 1, pending: 0, failed: 1, replied: 0, interviews: 0 },
   workflow: { running: false, paused: true, phase: 'idle', statusText: '未开始', tasks: [], taskIndex: 0, cardIndex: 0, processedKeys: [], retries: 0, currentJob: null, returnUrl: '', returnScrollY: 0, pendingApplyId: null, activeRunId: null },
@@ -36,7 +36,7 @@ globalThis.chrome = {
     reload: async () => {},
     create: async ({ url }) => ({ id: 88, url }),
     sendMessage: async (_id, message) => {
-      if (message.type === 'PROBE') return { ok: true, contentVersion: '1.3.0', contentFile: 'content-v37.js', pageType: 'jobs' };
+      if (message.type === 'PROBE') return { ok: true, contentVersion: '1.7.0', contentFile: 'content-v37.js', pageType: 'jobs' };
       if (message.type === 'RUN') { runCount += 1; return { ok: true }; }
       return { ok: true };
     }

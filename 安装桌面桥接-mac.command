@@ -66,6 +66,36 @@ exec "$NODE" "$INSTALL_DIR/server.js"
 RUNNER
 chmod +x "$RUNNER"
 
+NATIVE_RUNNER="$INSTALL_DIR/native-host-launcher.sh"
+cat > "$NATIVE_RUNNER" <<NATIVE
+#!/bin/bash
+export HOME="$HOME"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+cd "$INSTALL_DIR"
+exec "$NODE" "$INSTALL_DIR/native-host.js"
+NATIVE
+chmod +x "$NATIVE_RUNNER"
+
+install_native_manifest() {
+  local host_dir="$1"
+  mkdir -p "$host_dir"
+  cat > "$host_dir/com.jobclaw.bridge.json" <<JSON
+{
+  "name": "com.jobclaw.bridge",
+  "description": "JobClaw OpenClaw native bridge",
+  "path": "$NATIVE_RUNNER",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://dkfilgjiooigjbollljdionbnnofekkh/"]
+}
+JSON
+}
+
+install_native_manifest "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+install_native_manifest "$HOME/Library/Application Support/Chromium/NativeMessagingHosts"
+install_native_manifest "$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
+install_native_manifest "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+echo "✓ Native Messaging 自动唤醒通道已安装"
+
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -113,11 +143,11 @@ fi
 
 if check_bridge; then
   echo "✓ 桌面桥接已启动"
-  echo "✓ PDF 深度识别与 OpenClaw 本地联动可以使用"
+  echo "✓ PDF 深度识别 OpenClaw日报与 Native Messaging 自动唤醒可以使用"
   echo
   /usr/bin/curl -fsS "http://127.0.0.1:$PORT/status" || true
   echo
-  echo "回到 Chrome 后点击一次“重新识别”即可。"
+  echo "回到 Chrome 的 OpenClaw 页面 点击“检测并修复”即可。"
   exit 0
 fi
 

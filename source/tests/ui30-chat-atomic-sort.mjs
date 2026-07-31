@@ -7,7 +7,7 @@ const content = await readFile(`${root}/content-v37.js`, 'utf8');
 const sidepanel = await readFile(`${root}/sidepanel.js`, 'utf8');
 const jobPriority = await readFile(`${root}/lib/job-priority.js`, 'utf8');
 
-if (manifest.version !== '1.3.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '1.7.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js not registered');
 for (const permission of ['offscreen', 'clipboardWrite', 'debugger']) {
   if (!manifest.permissions.includes(permission)) throw new Error(`missing permission ${permission}`);
@@ -101,7 +101,7 @@ globalThis.chrome = {
   tabs: {
     query: async () => [{ id: 1, url: 'https://www.zhipin.com/web/geek/job', status: 'complete', title: 'BOSS' }],
     sendMessage: async (tabId, message) => message.type === 'PROBE'
-      ? { ok: true, contentVersion: '1.3.0', contentFile: 'content-v37.js', pageType: 'jobs' }
+      ? { ok: true, contentVersion: '1.7.0', contentFile: 'content-v37.js', pageType: 'jobs' }
       : { ok: true },
     reload: async () => {},
     get: async () => ({ id: 1, url: 'https://www.zhipin.com/web/geek/job', status: 'complete' }),

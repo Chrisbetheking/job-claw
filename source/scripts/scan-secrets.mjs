@@ -18,7 +18,7 @@ async function walk(dir) {
         ['api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/],
         ['bearer-token', /Authorization\s*[:=]\s*["'`]Bearer\s+[A-Za-z0-9._-]{20,}/i],
         ['personal-email', /chriswangjob@163\.com/i],
-        ['personal-phone', /(?:\+?86[\s-]?)?1[3-9]\d{9}/]
+        ['personal-phone', /(?<![0-9A-Fa-f])(?:\+?86[\s-]?)?1[3-9]\d{9}(?![0-9A-Fa-f])/]
       ];
       for (const [name, pattern] of checks) {
         if (pattern.test(text)) findings.push(`${name}: ${path.relative(root, full)}`);

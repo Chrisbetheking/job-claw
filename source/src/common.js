@@ -1,8 +1,12 @@
 export const DEFAULTS = {
   config: {
     executionMode: 'review',
-    dailyTarget: 150,
-    discoveryLimit: 0,
+    batchStrategy: 'precise',
+    massApplyAnalysis: 'fast',
+    pacingPreset: 'standard',
+    dryRun: false,
+    dailyTarget: 30,
+    discoveryLimit: 150,
     aiLimit: 0,
     minScore: 75,
     targetLocations: [],
@@ -12,8 +16,28 @@ export const DEFAULTS = {
     salary: '不限',
     sendResumeImage: true,
     sendOnlineResume: false,
-    betweenJobsSeconds: 12,
-    attachmentDelaySeconds: 4,
+    betweenJobsSeconds: 9,
+    attachmentDelaySeconds: 3,
+    maxPerCompanyPerDay: 3,
+    queueWarmup: 4,
+    maxConsecutiveFailures: 3,
+    jitterSeconds: 3,
+    companyVerificationEnabled: true,
+    companyVerificationProvider: 'bridge',
+    companyVerificationCacheDays: 14,
+    blockUnknownCompanies: false,
+    updateCheckEnabled: true,
+    dailyReportEnabled: true,
+    dailyReportTime: '20:30',
+    dailyReportNotification: true,
+    rateLimits: {
+      discoveryMs: 1000,
+      aiMs: 700,
+      companyMs: 1800,
+      deliveryMs: 9000,
+      attachmentMs: 3000,
+      updateMs: 5000
+    },
     requireSingleJobValidation: true,
     singleJobValidationCompletedAt: 0,
     model: {
@@ -37,7 +61,11 @@ export const DEFAULTS = {
     pending: 0,
     failed: 0,
     replied: 0,
-    interviews: 0
+    interviews: 0,
+    verified: 0,
+    blocked: 0,
+    duplicates: 0,
+    simulated: 0
   },
   workflow: {
     running: false,
@@ -57,7 +85,27 @@ export const DEFAULTS = {
   },
   pending: [],
   taskRuns: [],
-  events: []
+  events: [],
+  safetyState: {
+    lastActionAt: {},
+    consecutiveFailures: 0,
+    circuitOpen: false,
+    circuitReason: '',
+    circuitOpenedAt: 0,
+    totalThrottled: 0,
+    backoffLevel: 0,
+    lastBackoffReason: ''
+  },
+  companyVerificationCache: {},
+  deliveryHistory: [],
+  updateInfo: {
+    currentVersion: '1.7.0',
+    latestVersion: '',
+    available: false,
+    checkedAt: 0,
+    url: 'https://github.com/Chrisbetheking/job-claw/releases',
+    error: ''
+  }
 };
 
 export const today = () => new Date().toISOString().slice(0, 10);

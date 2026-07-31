@@ -16,7 +16,7 @@ for (const mode of ['data-execution-mode="review"', 'data-execution-mode="auto"'
   if ((html.match(new RegExp(mode, 'g')) || []).length !== 2) throw new Error(`执行模式入口数量错误：${mode}`);
 }
 if (!common.includes("executionMode: 'review'")) throw new Error('默认人工确认模式缺失');
-if (!common.includes('dailyTarget: 150')) throw new Error('每日成功投递目标默认值不是 150');
+if (!common.includes('dailyTarget: 30')) throw new Error('每日成功投递目标默认值不是 30');
 for (const token of ['APPROVE_ALL', 'REJECT_ALL', 'queue-greeting-editor', 'setExecutionMode', '全自动投递']) {
   if (!sidepanel.includes(token)) throw new Error(`人工/自动模式 UI 能力缺失：${token}`);
 }
@@ -28,7 +28,7 @@ for (const token of ['AUTO_APPROVE', 'approveAllPending', 'approved_queue', 'nor
 }
 if (!background.includes('不是招聘方。用户是正在应聘岗位的求职者')) throw new Error('AI 角色没有固定为求职者');
 if (!background.includes('看到你的简历') || !background.includes('匹配我们')) throw new Error('招聘方反向口吻拦截规则缺失');
-if (!background.includes('updatedStats.sent >= Number(config.dailyTarget || 150)')) throw new Error('每日目标没有按成功投递计算');
+if (!background.includes('updatedStats.sent >= Number(config.dailyTarget || 30)')) throw new Error('每日目标没有按成功投递计算');
 
 console.log(JSON.stringify({
   ok: true,
@@ -37,5 +37,5 @@ console.log(JSON.stringify({
   modes: ['MANUAL_REVIEW', 'FULL_AUTO'],
   manual: ['EDIT_GREETING', 'SINGLE_CONFIRM', 'BATCH_CONFIRM', 'BATCH_REJECT'],
   auto: 'SCORE_THRESHOLD_AUTO_APPLY_OK',
-  dailyTarget: 'SUCCESSFUL_APPLICATIONS_150'
+  dailyTarget: 'SUCCESSFUL_APPLICATIONS_30'
 }, null, 2));

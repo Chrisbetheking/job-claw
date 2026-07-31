@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '20'
           cache: npm
-          cache-dependency-path: source/package.json
+          cache-dependency-path: source/package-lock.json
 
       - name: Run full validation
         working-directory: source

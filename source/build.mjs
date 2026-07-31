@@ -9,7 +9,7 @@ for (const file of ['background.js', 'common.js', 'content-v37.js', 'sidepanel.j
 }
 await cp('src/lib', `${out}/lib`, { recursive: true });
 
-for (const file of ['manifest.json', 'sidepanel.html', 'styles.css', 'offscreen.html']) {
+for (const file of ['manifest.json', 'sidepanel.html', 'styles.css', 'offscreen.html', 'icon128.png']) {
   await cp(`public/${file}`, `${out}/${file}`);
 }
 
@@ -17,8 +17,8 @@ const manifest = JSON.parse(await readFile(`${out}/manifest.json`, 'utf8'));
 await writeFile('dist/build-info.json', JSON.stringify({
   version: manifest.version,
   versionName: manifest.version_name,
-  baseline: 'JobClaw v1.2.37',
+  baseline: 'JobClaw v1.7.0',
   builtAt: new Date().toISOString(),
-  runtimeModules: ['lib/conversation-identity.js', 'lib/task-state.js', 'lib/job-priority.js']
+  runtimeModules: ['lib/conversation-identity.js', 'lib/task-state.js', 'lib/job-priority.js', 'lib/safety-control.js', 'lib/company-verifier.js', 'lib/deduplication.js', 'lib/update-checker.js', 'lib/platform-adapter.js']
 }, null, 2));
 console.log('BUILD_OK');
