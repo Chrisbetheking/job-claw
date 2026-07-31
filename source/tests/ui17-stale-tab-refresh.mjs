@@ -1,5 +1,5 @@
 const data = {
-  bossContentRuntimeVersion: '1.7.0',
+  bossContentRuntimeVersion: '2.0.0',
   profile: {
     primaryDirections: [{ name: '前端开发实习生' }],
     searchKeywords: ['前端开发实习生'],
@@ -39,10 +39,10 @@ globalThis.chrome = {
     sendMessage: async (_id, message) => {
       if (message.type === 'PROBE') {
         return reloaded
-          ? { ok: true, contentVersion: '1.7.0', contentFile: 'content-v37.js', pageType: 'jobs' }
+          ? { ok: true, contentVersion: '2.0.0', contentBuild: '2.0.0-strategy-filters.1', contentFile: 'content-v37.js', pageType: 'jobs' }
           : { ok: true, pageType: 'jobs' }; // legacy UI16 receiver
       }
-      if (message.type === 'RUN') { runCount += 1; return { ok: true, contentVersion: '1.7.0' }; }
+      if (message.type === 'RUN') { runCount += 1; return { ok: true, contentVersion: '2.0.0', contentBuild: '2.0.0-strategy-filters.1' }; }
       return { ok: true };
     }
   },

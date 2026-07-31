@@ -13,9 +13,11 @@ const SCOPE_DEFAULTS = {
   update: 5000
 };
 
-export function normalizeStrategy(value = 'precise') {
-  if (value === 'mass' || value === 'explore' || value === 'balanced') return 'mass';
-  return 'precise';
+export function normalizeStrategy(value = 'safe-mass') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['full-mass', 'full', 'all', 'unfiltered-mass', 'mass-all'].includes(normalized)) return 'full-mass';
+  if (['safe-mass', 'mass', 'explore', 'balanced', 'precise', 'safe'].includes(normalized)) return 'safe-mass';
+  return 'safe-mass';
 }
 
 export function normalizeSafetyConfig(config = {}) {
@@ -148,7 +150,7 @@ export function strictHardBlocks(hardBlocks = []) {
 }
 
 export function evaluateStrategy({
-  strategy = 'precise',
+  strategy = 'safe-mass',
   score = 0,
   minScore = 75,
   riskLevel = 'unknown',
@@ -162,25 +164,27 @@ export function evaluateStrategy({
   if (riskLevel === 'high') {
     return { accepted: false, reason: '企业或岗位存在明确高风险', threshold: 101, fatalBlocks };
   }
-  if (fatalBlocks.length) {
-    return { accepted: false, reason: `存在明确硬性冲突：${fatalBlocks[0]}`, threshold: 101, fatalBlocks };
-  }
-  if (normalized === 'mass') {
+  if (normalized === 'full-mass') {
     return {
       accepted: true,
-      reason: verified ? '通过安全海投硬条件检查' : '企业未核验但未发现明确风险，进入海投队列',
+      reason: verified ? '通过完全海投风险检查' : '未发现明确安全风险，进入完全海投队列',
       threshold: 0,
       fatalBlocks,
+      ignoredHardBlocks: fatalBlocks,
       priorityScore: numericScore,
       originalDecision: decision
     };
   }
-  const threshold = Math.max(50, Math.min(95, Number(minScore || 70)));
+  if (fatalBlocks.length) {
+    return { accepted: false, reason: `存在明确硬性冲突：${fatalBlocks[0]}`, threshold: 101, fatalBlocks };
+  }
   return {
-    accepted: numericScore >= threshold && decision !== 'reject',
-    reason: numericScore >= threshold && decision !== 'reject' ? '符合精准投递条件' : '未达到精准投递阈值',
-    threshold,
+    accepted: true,
+    reason: verified ? '通过安全海投硬条件检查' : '企业未核验但未发现明确风险，进入安全海投队列',
+    threshold: 0,
     fatalBlocks,
-    priorityScore: numericScore
+    priorityScore: numericScore,
+    originalDecision: decision,
+    legacyMinScore: Math.max(0, Math.min(100, Number(minScore || 0)))
   };
 }

@@ -8,7 +8,7 @@ export function jobFingerprint(job = {}) {
   const url = String(job.url || '').split('#')[0].split('?')[0];
   const id = String(job.id || job.jobId || url.match(/job_detail\/([^/.?]+)/)?.[1] || '').trim();
   if (id) return `id:${id}`;
-  return `text:${normalizeCompanyName(job.company)}:${normalize(job.title)}:${normalize(job.location)}:${normalize(job.salary)}`;
+  return `text:${normalizeCompanyName(job.company)}:${normalize(job.title)}:${normalize(job.location)}`;
 }
 
 export function companyDailyCount(history = [], companyName = '', date = new Date().toISOString().slice(0, 10)) {

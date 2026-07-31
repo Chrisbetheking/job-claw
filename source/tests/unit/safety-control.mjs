@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { computeRateLimitDecision, evaluateStrategy, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from '../../src/lib/safety-control.js';
 
-const config = { minScore: 75, batchStrategy: 'precise', pacingPreset: 'standard', maxConsecutiveFailures: 3, jitterSeconds: 0 };
+const config = { minScore: 75, batchStrategy: 'safe-mass', pacingPreset: 'standard', maxConsecutiveFailures: 3, jitterSeconds: 0 };
 const first = computeRateLimitDecision(config, {}, 'delivery', 1000, () => 0);
 assert.equal(first.allowed, true);
 assert.equal(first.waitMs, 0);
 const second = computeRateLimitDecision(config, { lastActionAt: { delivery: 1000 } }, 'delivery', 2000, () => 0);
 assert.equal(second.waitMs, 8000);
-assert.equal(evaluateStrategy({ strategy: 'precise', score: 88, minScore: 75, riskLevel: 'low', verified: true, decision: 'recommend' }).accepted, true);
-assert.equal(evaluateStrategy({ strategy: 'precise', score: 60, minScore: 75, riskLevel: 'unknown', verified: false, decision: 'cautious' }).accepted, false);
-assert.equal(evaluateStrategy({ strategy: 'mass', score: 20, riskLevel: 'unknown', decision: 'reject', hardBlocks: ['技能经验不足'] }).accepted, true);
-assert.equal(evaluateStrategy({ strategy: 'mass', score: 90, riskLevel: 'high' }).accepted, false);
+assert.equal(evaluateStrategy({ strategy: 'safe-mass', score: 88, minScore: 75, riskLevel: 'low', verified: true, decision: 'recommend' }).accepted, true);
+assert.equal(evaluateStrategy({ strategy: 'safe-mass', score: 60, minScore: 75, riskLevel: 'unknown', verified: false, decision: 'cautious' }).accepted, true);
+assert.equal(evaluateStrategy({ strategy: 'safe-mass', score: 20, riskLevel: 'unknown', decision: 'reject', hardBlocks: ['技能经验不足'] }).accepted, true);
+assert.equal(evaluateStrategy({ strategy: 'safe-mass', score: 90, riskLevel: 'high' }).accepted, false);
 assert.equal(strictHardBlocks(['必须持有教师资格证', 'Java经验不足']).length, 1);
 let state = {};
 state = recordSafetyOutcome(config, state, { ok: false, reason: '网络超时' }, 1);
@@ -19,4 +19,6 @@ state = recordSafetyOutcome(config, state, { ok: false, reason: '普通失败' }
 state = recordSafetyOutcome(config, state, { ok: false, reason: '普通失败' }, 3);
 assert.equal(state.circuitOpen, true);
 assert.equal(resetSafetyCircuit(state).circuitOpen, false);
+assert.equal(evaluateStrategy({ strategy: 'full-mass', score: 5, riskLevel: 'low', hardBlocks: ['必须本科但用户为大专'] }).accepted, true);
+assert.equal(evaluateStrategy({ strategy: 'full-mass', score: 90, riskLevel: 'high' }).accepted, false);
 console.log('UNIT_SAFETY_CONTROL_OK');

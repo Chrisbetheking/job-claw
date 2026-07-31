@@ -1,7 +1,7 @@
 {
-  "name": "jobclaw-by-chris",
+  "name": "jobclaw",
   "private": true,
-  "version": "1.7.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
@@ -11,11 +11,22 @@
     "test:unit": "node tests/run-unit.mjs",
     "test:integration": "node tests/run-integration.mjs",
     "test:regression": "node tests/run-regression.mjs",
-    "test:all": "npm run build && node tests/validate.mjs && npm run test:unit && npm run test:integration && npm run test:regression && npm run check:manifest && npm run check:syntax && npm run scan:secrets && npm run check:release-sync",
+    "test:all": "npm run build && node tests/validate.mjs && npm run test:unit && npm run test:integration && npm run test:regression && npm run check:manifest && npm run check:syntax && npm run scan:secrets",
     "test": "npm run test:all",
-    "check:release-sync": "node scripts/check-release-sync.mjs",
-    "release:sync": "node scripts/sync-release.mjs",
-    "release:metadata": "node scripts/generate-release-metadata.mjs",
-    "release:prepare": "npm run build && npm run release:sync && npm run release:metadata"
+    "release:prepare": "npm test"
+  },
+  "description": "Local-first open-source job application assistant for Chrome",
+  "license": "Apache-2.0",
+  "author": "Chris",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chrisbetheking/job-claw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Chrisbetheking/job-claw/issues"
+  },
+  "homepage": "https://github.com/Chrisbetheking/job-claw",
+  "engines": {
+    "node": ">=20"
   }
 }

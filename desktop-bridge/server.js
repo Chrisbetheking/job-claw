@@ -82,6 +82,9 @@ function buildReport(database, requestedDate = localDateKey()) {
   const discovered = Number(stats.discovered || 0);
   const blocked = Math.max(Number(stats.blocked || 0), blockedEvents.length);
   const duplicates = Math.max(Number(stats.duplicates || 0), duplicateEvents.length);
+  const lowQuality = Number(stats.lowQuality || 0);
+  const stagnantTasks = Number(stats.stagnantTasks || 0);
+  const filterFailures = Number(stats.filterFailures || 0);
   const simulated = Math.max(Number(stats.simulated || 0), simulatedEvents.length);
   const jobs = successEvents
     .map(event => event.data?.job || {})
@@ -93,7 +96,7 @@ function buildReport(database, requestedDate = localDateKey()) {
     companyCounts.set(company, (companyCounts.get(company) || 0) + 1);
   }
   const topCompanies = [...companyCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const strategy = snapshot.config?.batchStrategy === 'mass' ? '安全海投' : '精准投递';
+  const strategy = snapshot.config?.batchStrategy === 'full-mass' ? '完全海投' : '安全海投';
   const pacing = { conservative: '保守', standard: '标准', efficient: '高效', custom: '自定义' }[snapshot.config?.pacingPreset] || '标准';
   const lines = [
     `JobClaw × OpenClaw 求职日报｜${dateKey}`,
@@ -107,6 +110,9 @@ function buildReport(database, requestedDate = localDateKey()) {
     `沟通失败：${failed}`,
     `风险拦截：${blocked}`,
     `重复跳过：${duplicates}`,
+    `明显低质跳过：${lowQuality}`,
+    `重复过多自动切换：${stagnantTasks}`,
+    `页面筛选失败：${filterFailures}`,
     `模拟通过：${simulated}`,
     `投递成功率：${percentage(sent, sent + failed)}`,
     `当前待处理：${Number(snapshot.queue?.waiting || stats.pending || 0)}`,
@@ -411,7 +417,7 @@ const server = http.createServer((request, response) => {
         return respond(response, 200, {
           ok: true,
           name: 'jobclaw-bridge',
-          version: '1.7.0',
+          version: '2.0.0',
           transport: 'http',
           extensionId: config.extensionId || '',
           companyProvider: { mode: config.companyProvider?.mode || 'local', configured: Boolean(config.companyProvider?.endpoint) },
@@ -497,7 +503,7 @@ server.on('error', error => {
 });
 
 server.listen(config.port, '127.0.0.1', () => {
-  console.log(`JobClaw Bridge 1.7.0 Formal http://127.0.0.1:${config.port}`);
+  console.log(`JobClaw Bridge 2.0.0 Formal http://127.0.0.1:${config.port}`);
   maybeGenerateScheduledReport();
 });
 

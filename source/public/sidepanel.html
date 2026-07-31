@@ -36,6 +36,13 @@
               <span>全自动投递</span><small>达标岗位自动以应聘者身份沟通</small>
             </button>
           </div>
+          <div class="strategy-quick" aria-label="投递范围">
+            <span class="strategy-quick-label">投递范围</span>
+            <div class="strategy-selector compact" role="group" aria-label="海投策略">
+              <button class="strategy-option" type="button" data-batch-strategy="full-mass"><span>完全海投</span><small>除重复和明确安全风险外尽量覆盖</small></button>
+              <button class="strategy-option is-active" type="button" data-batch-strategy="safe-mass"><span>安全海投</span><small>额外排除明确硬性冲突岗位</small></button>
+            </div>
+          </div>
           <div class="task-actions">
             <button class="button button-primary action-main" id="startTask">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
@@ -49,6 +56,14 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
               <span>停止</span>
             </button>
+          </div>
+          <div class="startup-feedback" id="startupFeedback" hidden role="status" aria-live="polite">
+            <i class="startup-spinner" aria-hidden="true"></i>
+            <span><strong id="startupFeedbackTitle">准备连接</strong><small id="startupFeedbackText">正在建立与 BOSS 页面的连接</small></span>
+            <div class="startup-feedback-actions">
+              <button class="text-button" id="retryStartup" type="button" hidden>重新连接</button>
+              <button class="text-button" id="openBossJobs" type="button" hidden>打开职位页</button>
+            </div>
           </div>
         </article>
 
@@ -80,7 +95,12 @@
           </div>
         </article>
 
-        <details class="module-card collapsible" data-collapsible="current-task" open>
+        <article class="module-card actual-search-context" id="actualSearchContext" hidden>
+          <div class="module-title"><div><b>页面实际筛选</b><small>对比任务配置与 BOSS 页面当前条件</small></div><span class="pill subtle" id="actualSearchContextStatus">等待任务</span></div>
+          <div class="search-context-grid" id="actualSearchContextList"></div>
+        </article>
+
+        <details class="module-card collapsible" data-collapsible="current-task">
           <summary>
             <span><b>当前任务</b><small>实时状态与处理进度</small></span>
             <i class="chevron"></i>
@@ -259,7 +279,7 @@
           <div class="delivery-task-list" id="deliveryTaskList"></div>
         </article>
 
-        <details class="module-card collapsible" data-collapsible="pending-jobs" open>
+        <details class="module-card collapsible" data-collapsible="pending-jobs">
           <summary>
             <span><b id="pendingSectionTitle">待确认岗位</b><small id="pendingSectionSubtitle">按 AI 匹配分从高到低排列</small></span>
             <i class="chevron"></i>
@@ -289,26 +309,39 @@
             <button class="mode-option" type="button" data-execution-mode="auto"><span>全自动投递</span><small>按所选策略和安全限速自动沟通</small></button>
           </div>
           <p class="mode-policy" id="modePolicyText">AI 只负责筛选和生成求职招呼语，发送前由你最终确认。</p>
+          <div class="strategy-settings-block">
+            <div class="module-title compact-title"><div><b>海投策略</b><small>策略只控制岗位是否进入队列 不会关闭去重 限速和发送确认</small></div><span class="pill accent" id="settingsStrategyPill">安全海投</span></div>
+            <div class="strategy-selector" role="group" aria-label="海投策略">
+              <button class="strategy-option" type="button" data-batch-strategy="full-mass"><span>完全海投</span><small>不因技能 年限 专业 学历或匹配分不足拦截</small></button>
+              <button class="strategy-option is-active" type="button" data-batch-strategy="safe-mass"><span>安全海投</span><small>拦截明确硬性冲突 重复岗位和高风险岗位</small></button>
+            </div>
+            <select id="batchStrategy" class="visually-hidden-control" tabindex="-1" aria-hidden="true"><option value="full-mass">完全海投</option><option value="safe-mass">安全海投</option></select>
+          </div>
           <div class="field-grid two compact-settings">
-            <label class="field"><span>投递策略</span><select id="batchStrategy"><option value="precise">精准投递</option><option value="mass">安全海投</option></select><small>精准投递按匹配度筛选 安全海投只拦截明确硬性冲突 重复岗位和高风险岗位</small></label>
             <label class="field"><span>海投分析方式</span><select id="massApplyAnalysis"><option value="fast">快速模式 不逐岗调用AI</option><option value="ai">AI个性化分析</option></select><small>快速模式使用简历事实生成基础招呼语 AI模式更个性化但速度和成本更高</small></label>
+            <label class="field"><span>招呼语风格</span><select id="greetingStyle"><option value="human-project">真人项目型 默认</option><option value="concise">简短直接</option><option value="skill-first">技术切入</option></select><small>默认写一段真实项目和一项本人负责内容 最多2项技术 不再使用模板式自我介绍</small></label>
             <label class="switch-line compact-switch"><input id="dryRun" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>模拟运行</b><small>完成采集 核验 分析和队列预览 绝不发送消息</small></span></label>
           </div>
         </article>
 
-        <details class="module-card collapsible" data-collapsible="search-settings" open>
+        <details class="module-card collapsible" data-collapsible="search-settings">
           <summary>
             <span><b>搜索条件</b><small>生成 BOSS 岗位搜索任务</small></span>
             <i class="chevron"></i>
           </summary>
           <div class="module-body form-grid">
-            <label class="field"><span>目标城市</span><input id="locations" type="text" placeholder="例如：北京，上海，杭州"></label>
-            <label class="field"><span>求职类型</span><input id="types" type="text" placeholder="不限，全职，实习"></label>
+            <label class="field"><span>地区</span><input id="locations" type="text" list="bossCityOptions" placeholder="例如：成都，杭州；填写全国可轮换多个城市"><small>多个地区用逗号分隔 每个地区会生成独立搜索任务</small></label>
+            <datalist id="bossCityOptions"><option value="全国"></option><option value="北京"></option><option value="上海"></option><option value="广州"></option><option value="深圳"></option><option value="杭州"></option><option value="成都"></option><option value="南京"></option><option value="武汉"></option><option value="西安"></option><option value="苏州"></option><option value="重庆"></option><option value="长沙"></option><option value="天津"></option><option value="郑州"></option><option value="厦门"></option><option value="青岛"></option></datalist>
+            <label class="switch-line compact-switch"><input id="expandNationwideToCities" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>全国自动轮换城市</b><small>地区填写全国时 不停留在全国推荐页 而是按城市池逐个搜索不同岗位</small></span></label>
+            <label class="field"><span>全国轮投城市池</span><textarea id="cityRotationCities" rows="2" placeholder="北京，上海，广州，深圳，杭州，成都"></textarea><small>只在地区包含全国并开启自动轮换时生效</small></label>
             <div class="field-grid two">
-              <label class="field"><span>工作经验</span><input id="experience" type="text" placeholder="在校/应届"></label>
-              <label class="field"><span>学历要求</span><input id="degree" type="text" placeholder="不限，本科，硕士"></label>
+              <label class="field"><span>职位类型</span><select id="types"><option value="不限">不限</option><option value="全职">全职</option><option value="兼职">兼职</option><option value="实习">实习</option></select></label>
+              <label class="field"><span>薪资待遇</span><select id="salary"><option value="不限">不限</option><option value="3K以下">3K以下</option><option value="3-5K">3-5K</option><option value="5-10K">5-10K</option><option value="10-20K">10-20K</option><option value="20-50K">20-50K</option><option value="50K以上">50K以上</option></select></label>
             </div>
-            <label class="field"><span>薪资待遇</span><input id="salary" type="text" placeholder="不限"></label>
+            <div class="field-grid two">
+              <label class="field"><span>工作经验</span><select id="experience"><option value="不限">不限</option><option value="在校生">在校生</option><option value="应届生">应届生</option><option value="经验不限">经验不限</option><option value="1年以内">1年以内</option><option value="1-3年">1-3年</option><option value="3-5年">3-5年</option><option value="5-10年">5-10年</option><option value="10年以上">10年以上</option></select></label>
+              <label class="field"><span>学历要求</span><select id="degree"><option value="不限">不限</option><option value="初中及以下">初中及以下</option><option value="中专/中技">中专/中技</option><option value="高中">高中</option><option value="大专">大专</option><option value="本科">本科</option><option value="硕士">硕士</option><option value="博士">博士</option></select></label>
+            </div>
             <div class="field-grid two numeric-grid">
               <label class="field"><span>推荐分数</span><input id="minScore" type="number" min="0" max="100" step="1"></label>
               <label class="field"><span>每日成功投递目标</span><input id="dailyTarget" type="number" min="1" max="150" step="1"></label>
@@ -316,6 +349,18 @@
             <div class="field-grid two numeric-grid">
               <label class="field"><span>每日岗位采集上限</span><input id="discoveryLimit" type="number" min="1" max="800" step="1"><small>安全海投建议设置为投递目标的2到4倍</small></label>
               <label class="field"><span>同一公司每日上限</span><input id="maxPerCompanyPerDay" type="number" min="1" max="12" step="1"><small>避免同一家公司重复收到大量相似沟通</small></label>
+            </div>
+            <div class="field-grid two numeric-grid">
+              <label class="field"><span>单个地区关键词采集数</span><input id="maxJobsPerTask" type="number" min="1" max="100" step="1"><small>达到后自动轮换下一个地区或关键词</small></label>
+              <label class="field"><span>最多搜索任务数</span><input id="maxSearchTasks" type="number" min="1" max="300" step="1"><small>防止地区和关键词组合过多</small></label>
+            </div>
+            <div class="field-grid two numeric-grid">
+              <label class="field"><span>连续重复切换阈值</span><input id="stagnationLimit" type="number" min="3" max="30" step="1"><small>连续出现重复岗位后提前换地区或关键词</small></label>
+              <label class="field"><span>岗位去重记忆 天</span><input id="dedupeWindowDays" type="number" min="1" max="180" step="1"><small>已经看过或投递过的岗位在该周期内不再重复处理</small></label>
+            </div>
+            <div class="field-grid two">
+              <label class="field"><span>低质岗位处理</span><select id="lowQualityPolicy"><option value="skip-obvious">跳过明显低质岗位</option><option value="rank">仅降低排序 不自动跳过</option></select><small>不会因为普通技能或经验缺口判断为低质</small></label>
+              <label class="field"><span>明显低质阈值</span><input id="lowQualityThreshold" type="number" min="0" max="60" step="1"><small>默认24 只过滤信息缺失或明显异常岗位</small></label>
             </div>
             <div class="field-grid two">
               <label class="field"><span>投递效率</span><select id="pacingPreset"><option value="conservative">保守 15秒起</option><option value="standard">标准 9秒起</option><option value="efficient">高效 6秒起</option><option value="custom">自定义</option></select><small>始终单线程发送 遇到页面变慢或网络超时会自动降速</small></label>
@@ -332,7 +377,7 @@
           </div>
         </details>
 
-        <details class="module-card collapsible" data-collapsible="safety-settings" open>
+        <details class="module-card collapsible" data-collapsible="safety-settings">
           <summary><span><b>安全调度与企业核验</b><small>统一限速 熔断 去重和第三方企业查询 Provider</small></span><i class="chevron"></i></summary>
           <div class="module-body form-grid">
             <div class="field-grid two numeric-grid">
@@ -340,7 +385,7 @@
               <label class="field"><span>连续失败熔断次数</span><input id="maxConsecutiveFailures" type="number" min="1" max="10" step="1"><small>验证码 403 429等异常会立即熔断</small></label>
             </div>
             <label class="field"><span>企业核验 Provider</span><select id="companyVerificationProvider"><option value="bridge">OpenClaw MCP桥接</option><option value="local">仅本地风险规则</option></select><small>正式企业查询API密钥保存在本地桥接中 不写入扩展</small></label>
-            <div class="field-grid two numeric-grid"><label class="field"><span>企业信息缓存 天</span><input id="companyVerificationCacheDays" type="number" min="1" max="90" step="1"></label><div class="safety-state-card"><b id="safetyStateTitle">安全调度正常</b><small id="safetyStateText">未触发熔断</small><button class="button button-secondary small" id="resetSafety" type="button">重置熔断</button></div></div>
+            <div class="field-grid two numeric-grid"><label class="field"><span>企业信息缓存 天</span><input id="companyVerificationCacheDays" type="number" min="1" max="90" step="1"></label><div class="safety-state-card"><b id="safetyStateTitle">安全调度正常</b><small id="safetyStateText">未触发熔断</small><small id="jobHistoryCount">岗位去重记忆 0 条</small><div class="button-row safety-actions"><button class="button button-secondary small" id="probeAndRepair" type="button">检测页面</button><button class="button button-primary small" id="resetAndResume" type="button">重置并继续</button><button class="button button-secondary small" id="resetSafety" type="button">仅重置</button><button class="button button-ghost small" id="clearJobHistory" type="button">清除岗位记忆</button></div></div></div>
             <div class="switch-group">
               <label class="switch-line"><input id="companyVerificationEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>启用企业风险核验</b><small>工商Provider不可用时自动降级为本地岗位风险规则</small></span></label>
               <label class="switch-line"><input id="blockUnknownCompanies" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>阻止无法确认的企业</b><small>开启后未知企业不会进入投递队列</small></span></label>
@@ -364,7 +409,7 @@
         </details>
 
         <article class="module-card update-card">
-          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 1.7.0</small></div><span class="pill" id="updateVersionPill">1.7.0</span></div>
+          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 2.0.0</small></div><span class="pill" id="updateVersionPill">2.0.0</span></div>
           <div class="button-row"><button class="button button-secondary" id="checkUpdate" type="button">检查更新</button><button class="button button-primary" id="openUpdate" type="button" hidden>查看新版本</button></div>
         </article>
 
@@ -379,7 +424,7 @@
 
         <footer class="mini-footer">
           <span>JobClaw by Chris</span>
-          <span>微信：easymoneysniperchris</span>
+          <span>Apache-2.0 开源项目</span>
         </footer>
       </section>
 

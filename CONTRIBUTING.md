@@ -1,49 +1,72 @@
 # Contributing to JobClaw
 
-感谢参与 JobClaw by Chris。
+感谢你参与 JobClaw。
 
-## 开始前
+## 开发环境
 
-1. 从 `main` 新建分支，不要直接在稳定分支上实验。
-2. 不要提交 API Key、真实简历、招聘者聊天、手机号、邮箱、Cookie 或本地日志。
-3. 修改 `source/src` 或 `source/public` 后，执行 `cd source && npm run release:prepare`，确保根目录 `chrome-extension` 与构建结果一致。
-4. 新功能必须包含测试；BOSS 页面适配修复应包含可复现的脱敏结构或 fixture。
+- Node.js 20 或更高版本
+- Chrome 或 Chromium 浏览器
+- macOS OpenClaw 功能需要系统自带 Swift、PDFKit 和 Vision
 
-## 验证命令
+```bash
+git clone https://github.com/Chrisbetheking/job-claw.git
+cd job-claw/source
+npm ci
+npm test
+```
+
+## 源码入口
+
+- `source/src`：JavaScript 源码
+- `source/public`：Manifest、HTML、CSS、图标
+- `desktop-bridge`：可选本地桥接
+- `source/dist`：构建产物，不提交到仓库
+
+不要直接编辑构建目录。
+
+## 分支和提交
+
+从最新 `main` 创建分支：
+
+```text
+feat/company-verification
+fix/city-filter
+refactor/task-state
+```
+
+推荐提交前缀：
+
+```text
+feat:     新功能
+fix:      Bug 修复
+refactor: 不改变行为的重构
+test:     测试
+docs:     文档
+chore:    工程维护
+```
+
+一个提交只解决一类问题。不要把无关格式化、构建产物和功能修改混在一起。
+
+## 提交前检查
 
 ```bash
 cd source
 npm test
-npm run release:prepare
-npm test
 ```
 
-完整测试包括：
+UI 修改请至少检查 320、360、400 和 500 像素宽度的侧边栏。
 
-- 构建与 Manifest V3/CSP 校验
-- 单元测试
-- 集成测试
-- 历史回归测试
-- JavaScript 语法检查
-- 敏感信息扫描
-- 可安装扩展与源码构建同步检查
+招聘网站适配修复应提供脱敏后的 DOM 结构、复现步骤或测试 Fixture。不要提交真实姓名、公司聊天、Cookie、Token、API Key、简历或本地日志。
 
 ## Pull Request
 
-PR 请说明：
+PR 中请说明：
 
 - 问题和复现步骤
-- 具体修改
-- 风险与回滚方式
+- 设计选择
+- 修改范围
+- 风险与回滚方法
 - 已运行的测试
-- 脱敏后的界面截图（涉及 UI 时）
+- UI 变化截图（需脱敏）
 
-提交代码即表示你同意贡献内容按照 Apache License 2.0 许可，并保留 `NOTICE` 中的项目署名。
-
-## Bug Issue
-
-请提供版本、Chrome/操作系统版本、复现步骤、期望结果、实际结果和脱敏错误信息。不要在公开 Issue 里发送隐私数据。
-
-## Git 使用
-
-请从 `main` 创建功能分支并通过 Pull Request 合并，不要直接把多个不相关改动压成一个提交。提交信息建议使用 `feat:` `fix:` `refactor:` `test:` `docs:` `chore:`。完整流程见 `docs/GITHUB_WORKFLOW.md`。
+提交贡献即表示你同意所提交内容按 Apache License 2.0 发布。不要求签署额外 CLA。
