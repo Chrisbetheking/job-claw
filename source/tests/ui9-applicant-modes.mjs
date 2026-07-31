@@ -23,10 +23,10 @@ for (const token of ['APPROVE_ALL', 'REJECT_ALL', 'queue-greeting-editor', 'setE
 for (const token of ["activeConfig.executionMode === 'auto'", "send('AUTO_DISPATCH_NEXT'", 'activeConfig.dailyTarget']) {
   if (!content.includes(token)) throw new Error(`全自动执行链路缺失：${token}`);
 }
-for (const token of ['AUTO_APPROVE', 'approveAllPending', 'approved_queue', 'normalizeApplicantGreeting', '我想应聘贵公司的']) {
+for (const token of ['AUTO_APPROVE', 'approveAllPending', 'approved_queue', 'normalizeApplicantGreeting', 'humanGreetingTemplate', '只能带一段最相关的真实项目']) {
   if (!background.includes(token)) throw new Error(`求职者投递链路缺失：${token}`);
 }
-if (!background.includes('不是招聘方。用户是正在应聘岗位的求职者')) throw new Error('AI 角色没有固定为求职者');
+if (!background.includes('求职者的岗位分析助手，不是招聘方')) throw new Error('AI 角色没有固定为求职者');
 if (!background.includes('看到你的简历') || !background.includes('匹配我们')) throw new Error('招聘方反向口吻拦截规则缺失');
 if (!background.includes('updatedStats.sent >= Number(config.dailyTarget || 30)')) throw new Error('每日目标没有按成功投递计算');
 

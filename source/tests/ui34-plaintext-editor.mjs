@@ -4,7 +4,7 @@ const content = await readFile('dist/chrome-extension/content-v37.js', 'utf8');
 const background = await readFile('dist/chrome-extension/background.js', 'utf8');
 const manifest = JSON.parse(await readFile('dist/chrome-extension/manifest.json', 'utf8'));
 
-if (manifest.version !== '1.7.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '2.0.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js not registered');
 if (!content.includes('[contenteditable]:not([contenteditable="false"])')) throw new Error('plaintext-only contenteditable selector missing');
 if (!content.includes("editableMode === 'plaintext-only'")) throw new Error('plaintext-only editor scoring missing');

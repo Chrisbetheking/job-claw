@@ -33,6 +33,10 @@ export function computeJobPriority(item = {}) {
   priority -= gaps * 45;
   priority += salaryPriority(job);
   priority += freshnessPriority(job);
+  const qualityScore = Math.max(0, Math.min(100, Number(job.quality?.score ?? analysis.qualityScore ?? 50)));
+  priority += (qualityScore - 50) * 14;
+  if (job.quality?.level === 'high') priority += 180;
+  if (job.quality?.level === 'very-low') priority -= 1200;
   if (/外部网申|立即网申|去网申/.test(`${job.applicationMode || ''} ${job.cardText || ''}`)) priority -= 6000;
   priority -= Number(item.retryCount || 0) * 120;
   return Math.round(priority);

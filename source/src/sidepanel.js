@@ -7,8 +7,9 @@ const PROFILE_FORM_IDS = [
   'profileSalaryInput', 'profileExcludeInput'
 ];
 const SETTINGS_FORM_IDS = [
-  'locations', 'types', 'experience', 'degree', 'salary', 'minScore',
-  'batchStrategy', 'massApplyAnalysis', 'pacingPreset', 'queueWarmup', 'dryRun', 'dailyTarget', 'discoveryLimit', 'maxPerCompanyPerDay',
+  'locations', 'expandNationwideToCities', 'cityRotationCities', 'types', 'experience', 'degree', 'salary', 'minScore',
+  'batchStrategy', 'massApplyAnalysis', 'greetingStyle', 'pacingPreset', 'queueWarmup', 'dryRun', 'dailyTarget', 'discoveryLimit', 'maxPerCompanyPerDay',
+  'maxSearchTasks', 'maxJobsPerTask', 'stagnationLimit', 'dedupeWindowDays', 'lowQualityPolicy', 'lowQualityThreshold',
   'betweenJobsSeconds', 'attachmentDelaySeconds', 'jitterSeconds', 'maxConsecutiveFailures',
   'companyVerificationProvider', 'companyVerificationCacheDays', 'companyVerificationEnabled',
   'blockUnknownCompanies', 'updateCheckEnabled', 'dailyReportEnabled', 'dailyReportTime', 'dailyReportNotification', 'sendImage', 'sendOnline', 'baseUrl', 'modelName', 'apiKey'
@@ -311,12 +312,34 @@ function scheduleProfileDraftSave() {
   profileDraftSaveTimer = setTimeout(() => persistProfileDraftNow(), 120);
 }
 
-async function send(type, payload = {}) {
+async function send(type, payload = {}, options = {}) {
+  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
+  let timer = null;
   try {
-    return await chrome.runtime.sendMessage({ type, ...payload });
+    const request = chrome.runtime.sendMessage({ type, ...payload });
+    if (!timeoutMs) return await request;
+    return await Promise.race([
+      request,
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve({
+          ok: false,
+          timeout: true,
+          error: `等待${options.label || '扩展后台'}响应超时 请刷新 BOSS 页面后重试`
+        }), timeoutMs);
+      })
+    ]);
   } catch (error) {
     return { ok: false, error: error.message };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
+
+function hideToast() {
+  const toast = $('toast');
+  toast?.classList.remove('is-visible');
+  document.body.classList.remove('has-toast');
+  document.body.style.removeProperty('--toast-height');
 }
 
 function showToast(message, error = false) {
@@ -325,8 +348,13 @@ function showToast(message, error = false) {
   toast.textContent = message;
   toast.classList.toggle('is-error', error);
   toast.classList.add('is-visible');
+  document.body.classList.add('has-toast');
+  requestAnimationFrame(() => {
+    const height = Math.min(112, Math.max(40, Math.ceil(toast.getBoundingClientRect().height || 0)));
+    document.body.style.setProperty('--toast-height', `${height + 8}px`);
+  });
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('is-visible'), error ? 4200 : 2400);
+  toastTimer = setTimeout(hideToast, error ? 5200 : 3000);
 }
 
 function setResumeImportNotice({ visible = false, title = '', message = '', tone = 'info', actions = true } = {}) {
@@ -532,10 +560,32 @@ function renderSearchTasks(tasks = []) {
     setProgressState(track, effectiveStatus, task.progress);
     const counts = document.createElement('div');
     counts.className = 'search-task-counts';
-    counts.innerHTML = `<span>处理 <b>${Number(task.processed || 0)}</b></span><span>发现 <b>${Number(task.discovered || 0)}</b></span><span>分析 <b>${Number(task.analyzed || 0)}</b></span><span>异常 <b>${Number(task.failed || 0)}</b></span>`;
+    counts.innerHTML = `<span>处理 <b>${Number(task.processed || 0)}</b></span><span>入队 <b>${Number(task.accepted || 0)}</b></span><span>重复 <b>${Number(task.duplicates || 0)}</b></span><span>低质 <b>${Number(task.lowQuality || 0)}</b></span><span>异常 <b>${Number(task.failed || 0)}</b></span>`;
     item.append(head, track, counts);
     container.append(item);
   }
+}
+
+function compactTaskText(value, maxLength = 72) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^(职位名称|岗位名称|公司名称)[:：\s]*/i, '')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function displayTaskJob(job = {}) {
+  let title = compactTaskText(job.title || '岗位任务', 64);
+  if (/女士|先生|月内活跃|刚刚活跃|HR|招聘者|公司介绍/i.test(title)) title = '岗位任务';
+  title = title
+    .replace(/\s+\d+(?:\.\d+)?[-–~]\d+(?:\.\d+)?\s*(?:K|k|万|元\/天|元\/月).*$/i, '')
+    .replace(/\s+(?:\d+个月|本科|大专|硕士|博士).*$/i, '')
+    .trim() || '岗位任务';
+  const company = compactTaskText(job.company, 42).replace(/(?:成立于|公司介绍|是一家).*$/i, '').trim();
+  return {
+    title,
+    meta: [company, compactTaskText(job.location, 18), compactTaskText(job.salary, 24)].filter(Boolean).join(' · ') || '岗位信息处理中'
+  };
 }
 
 function createDeliveryTask(run) {
@@ -546,9 +596,12 @@ function createDeliveryTask(run) {
   const title = document.createElement('div');
   title.className = 'delivery-task-title';
   const strong = document.createElement('strong');
-  strong.textContent = run.job?.title || '岗位任务';
+  const displayJob = displayTaskJob(run.job || {});
+  strong.textContent = displayJob.title;
+  strong.title = displayJob.title;
   const company = document.createElement('span');
-  company.textContent = [run.job?.company, run.job?.location, run.job?.salary].filter(Boolean).join(' · ') || '岗位信息处理中';
+  company.textContent = displayJob.meta;
+  company.title = displayJob.meta;
   title.append(strong, company);
   const pill = document.createElement('span');
   pill.className = 'delivery-status-pill';
@@ -573,9 +626,13 @@ function createDeliveryTask(run) {
   card.append(head, track, meta);
 
   if (run.error) {
-    const error = document.createElement('div');
+    const error = document.createElement('details');
     error.className = 'delivery-error';
-    error.textContent = run.error;
+    const summary = document.createElement('summary');
+    summary.textContent = compactTaskText(run.error, 88);
+    const detail = document.createElement('p');
+    detail.textContent = String(run.error || '');
+    error.append(summary, detail);
     card.append(error);
   }
 
@@ -666,7 +723,18 @@ function renderDeliveryTasks(runs = []) {
     container.append(empty);
     return;
   }
-  for (const run of list) container.append(createDeliveryTask(run));
+  const active = list.filter(run => ['running', 'queued', 'waiting_review'].includes(run.status));
+  const failed = list.filter(run => run.status === 'failed').slice(0, 10);
+  const recentFinished = list.filter(run => ['success', 'skipped', 'ignored'].includes(run.status)).slice(0, 6);
+  const visibleRuns = [...active, ...failed, ...recentFinished].filter((run, index, items) => items.findIndex(item => item.id === run.id) === index);
+  for (const run of visibleRuns) container.append(createDeliveryTask(run));
+  const hiddenCount = Math.max(0, list.length - visibleRuns.length);
+  if (hiddenCount) {
+    const folded = document.createElement('div');
+    folded.className = 'delivery-task-folded';
+    folded.textContent = `其余 ${hiddenCount} 条已结束或较早任务已折叠，可在运行日志中查看`;
+    container.append(folded);
+  }
 }
 
 function createQueueItem(item) {
@@ -901,6 +969,10 @@ function renderReadiness() {
   $('readinessPill')?.classList.toggle('accent', readyCount === 4);
 }
 
+function normalizedBatchStrategy(value = '') {
+  return value === 'full-mass' ? 'full-mass' : 'safe-mass';
+}
+
 function renderExecutionMode() {
   const mode = state.config?.executionMode === 'auto' ? 'auto' : 'review';
   const auto = mode === 'auto';
@@ -911,11 +983,20 @@ function renderExecutionMode() {
   }
   setText('modeChip', auto ? '全自动投递' : '人工确认');
   setText('settingsModePill', auto ? '全自动投递' : '人工确认');
-  const strategyLabel = state.config?.batchStrategy === 'mass' ? '安全海投' : '精准投递';
+  const strategy = normalizedBatchStrategy(state.config?.batchStrategy);
+  const strategyLabel = strategy === 'full-mass' ? '完全海投' : '安全海投';
+  for (const button of document.querySelectorAll('[data-batch-strategy]')) {
+    const active = button.dataset.batchStrategy === strategy;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+  setText('settingsStrategyPill', strategyLabel);
+  const hiddenStrategy = $('batchStrategy');
+  if (hiddenStrategy) hiddenStrategy.value = strategy;
   setText('modePolicyText', state.config?.dryRun
     ? `当前为模拟运行 · ${strategyLabel} 不会执行真实发送`
     : auto
-      ? `${strategyLabel}已开启 ${strategyLabel === '安全海投' ? '只排除明确硬性冲突 重复和高风险岗位' : '按匹配度优先筛选'} 发送始终单线程并受自适应限速保护`
+      ? `${strategyLabel}已开启 ${strategy === 'full-mass' ? '不按匹配度和学历年限拦截 只保留去重与明确安全风险检查' : '额外排除明确硬性冲突岗位'} 发送始终单线程并受自适应限速保护`
       : `${strategyLabel}已开启 AI完成筛选和企业核验后 由你逐条或批量确认`);
   setText('messageEyebrow', auto ? '自动投递记录' : '人工确认');
   setText('messageHeading', auto ? '投递与消息' : '待确认岗位');
@@ -934,21 +1015,85 @@ function renderExecutionMode() {
   return mode;
 }
 
+function startupStepLabel(step = '') {
+  return ({
+    'local-check': '检查本地配置',
+    'find-tab': '查找 BOSS 页面',
+    'page-ready': '等待页面加载',
+    receiver: '连接页面助手',
+    navigate: '打开职位页',
+    dispatch: '发送启动任务',
+    running: '已经启动',
+    failed: '启动失败'
+  })[step] || '准备连接';
+}
+
+function renderStartupFeedback(workflow = {}) {
+  const box = $('startupFeedback');
+  if (!box) return;
+  const startup = workflow.startup || {};
+  const visible = startup.state === 'starting' || startup.state === 'failed';
+  box.hidden = !visible;
+  box.classList.toggle('is-error', startup.state === 'failed');
+  box.classList.toggle('is-loading', startup.state === 'starting');
+  setText('startupFeedbackTitle', startup.state === 'failed' ? '连接没有完成' : startupStepLabel(startup.step));
+  setText('startupFeedbackText', startup.error || startup.message || workflow.statusText || '正在建立连接');
+  const retry = $('retryStartup');
+  if (retry) retry.hidden = startup.state !== 'failed';
+  const open = $('openBossJobs');
+  if (open) open.hidden = startup.state !== 'failed';
+}
+
+function renderActualSearchContext(workflow = {}) {
+  const card = $('actualSearchContext');
+  if (!card) return;
+  const context = workflow.actualSearchContext;
+  card.hidden = !context;
+  if (!context) return;
+  const configured = context.configured || {};
+  const actual = context.actual || {};
+  const pairs = [
+    ['地区', configured.location, actual.location],
+    ['关键词', configured.keyword, actual.keyword],
+    ['类型', configured.employmentType, actual.employmentType],
+    ['薪资', configured.salary, actual.salary],
+    ['经验', configured.experience, actual.experience],
+    ['学历', configured.degree, actual.degree]
+  ];
+  const list = $('actualSearchContextList');
+  if (list) {
+    list.replaceChildren(...pairs.map(([label, expected, current]) => {
+      const row = document.createElement('div');
+      const same = String(expected || '') === String(current || '') || !current;
+      row.className = `search-context-row${same ? '' : ' is-mismatch'}`;
+      const key = document.createElement('span'); key.textContent = label;
+      const value = document.createElement('strong'); value.textContent = current || expected || '不限';
+      const configuredText = document.createElement('small'); configuredText.textContent = same ? '已生效' : `配置 ${expected || '不限'}`;
+      row.append(key, value, configuredText);
+      return row;
+    }));
+  }
+  setText('actualSearchContextStatus', context.ok === false ? '部分筛选未确认' : '页面条件已确认');
+  $('actualSearchContextStatus')?.classList.toggle('accent', context.ok !== false);
+}
+
 function renderDynamic() {
   const workflow = state.workflow || {};
   const stats = state.stats || {};
   const pendingCount = (state.pending || []).filter(item => item.status === 'pending').length;
-  const running = Boolean(workflow.running && !workflow.paused);
+  const starting = workflow.phase === 'starting' || workflow.startup?.state === 'starting';
+  const running = Boolean(workflow.running && !workflow.paused && !starting);
   const paused = Boolean(workflow.running && workflow.paused);
   const mode = renderExecutionMode();
   const auto = mode === 'auto';
 
   const top = $('topStatus');
-  top.classList.toggle('is-running', running);
+  top.classList.toggle('is-running', running || starting);
+  top.classList.toggle('is-starting', starting);
   top.classList.toggle('is-paused', paused);
   top.querySelector('span').textContent = workflow.statusText || '未开始';
 
-  setText('homeHeadline', running
+  setText('homeHeadline', starting ? '正在建立 BOSS 页面连接' : running
     ? (auto ? '正在全自动筛选并投递' : '正在筛选岗位，等待你的确认')
     : paused ? '任务已暂停'
       : (auto ? '准备开始全自动投递' : '准备开始人工确认筛选'));
@@ -974,8 +1119,8 @@ function renderDynamic() {
   setText('taskProgress', `${Math.min((workflow.taskIndex || 0) + (workflow.tasks?.length ? 1 : 0), workflow.tasks?.length || 0)} / ${workflow.tasks?.length || 0}`);
   setText('currentJob', [activeRun?.job?.title || workflow.currentJob?.title, activeRun?.job?.company || workflow.currentJob?.company].filter(Boolean).join(' · ') || '—');
 
-  $('startTask').disabled = running;
-  $('pauseTask').disabled = !workflow.running || workflow.paused;
+  $('startTask').disabled = running || starting;
+  $('pauseTask').disabled = starting || !workflow.running || workflow.paused;
   $('stopTask').disabled = !workflow.running && workflow.phase === 'idle';
 
   if (!dirtyFields.has('resumeText')) {
@@ -1007,11 +1152,17 @@ function renderDynamic() {
   const safety = state.safetyState || {};
   setText('safetyStateTitle', safety.circuitOpen ? '安全熔断已开启' : '安全调度正常');
   setText('safetyStateText', safety.circuitOpen ? (safety.circuitReason || '请检查页面后重置') : `连续失败 ${Number(safety.consecutiveFailures || 0)} · 自适应降速 ${Number(safety.backoffLevel || 0)} 级 · 已限速 ${Number(safety.totalThrottled || 0)} 次`);
+  setText('jobHistoryCount', `岗位去重记忆 ${Number(state.jobSeenHistoryCount || 0)} 条`);
+  $('probeAndRepair')?.toggleAttribute('disabled', false);
+  $('resetAndResume')?.toggleAttribute('disabled', false);
   $('resetSafety')?.toggleAttribute('disabled', !safety.circuitOpen && !Number(safety.consecutiveFailures || 0));
+  $('clearJobHistory')?.toggleAttribute('disabled', !Number(state.jobSeenHistoryCount || 0));
   const update = state.updateInfo || {};
-  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '1.7.0'));
-  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '1.7.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
+  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.0.0'));
+  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.0.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
   if ($('openUpdate')) $('openUpdate').hidden = !update.available;
+  renderStartupFeedback(workflow);
+  renderActualSearchContext(workflow);
   updateUnsavedIndicators();
 }
 
@@ -1034,19 +1185,28 @@ function renderForms(force = false) {
   autoGrowProfileFields();
 
   setFieldValue('locations', (config.targetLocations || []).join('，'), force);
-  setFieldValue('types', (config.employmentTypes || []).join('，'), force);
-  setFieldValue('experience', (config.experiences || []).join('，'), force);
-  setFieldValue('degree', (config.degrees || []).join('，'), force);
+  setFieldValue('expandNationwideToCities', config.expandNationwideToCities !== false, force);
+  setFieldValue('cityRotationCities', (config.cityRotationCities || []).join('，'), force);
+  setFieldValue('types', (config.employmentTypes || ['不限'])[0] || '不限', force);
+  setFieldValue('experience', (config.experiences || ['不限'])[0] || '不限', force);
+  setFieldValue('degree', (config.degrees || ['不限'])[0] || '不限', force);
   setFieldValue('salary', config.salary || '不限', force);
   setFieldValue('minScore', config.minScore ?? 75, force);
-  setFieldValue('batchStrategy', ['mass', 'explore', 'balanced'].includes(config.batchStrategy) ? 'mass' : 'precise', force);
+  setFieldValue('batchStrategy', normalizedBatchStrategy(config.batchStrategy), force);
   setFieldValue('massApplyAnalysis', config.massApplyAnalysis || 'fast', force);
+  setFieldValue('greetingStyle', config.greetingStyle === 'natural-project' ? 'human-project' : (config.greetingStyle || 'human-project'), force);
   setFieldValue('pacingPreset', config.pacingPreset || 'standard', force);
   setFieldValue('queueWarmup', config.queueWarmup ?? 4, force);
   setFieldValue('dryRun', Boolean(config.dryRun), force);
   setFieldValue('dailyTarget', config.dailyTarget ?? 30, force);
   setFieldValue('discoveryLimit', config.discoveryLimit ?? 100, force);
   setFieldValue('maxPerCompanyPerDay', config.maxPerCompanyPerDay ?? 2, force);
+  setFieldValue('maxSearchTasks', config.maxSearchTasks ?? 120, force);
+  setFieldValue('maxJobsPerTask', config.maxJobsPerTask ?? 20, force);
+  setFieldValue('stagnationLimit', config.stagnationLimit ?? 8, force);
+  setFieldValue('dedupeWindowDays', config.dedupeWindowDays ?? 30, force);
+  setFieldValue('lowQualityPolicy', config.lowQualityPolicy || 'skip-obvious', force);
+  setFieldValue('lowQualityThreshold', config.lowQualityThreshold ?? 24, force);
   setFieldValue('betweenJobsSeconds', config.betweenJobsSeconds ?? 15, force);
   setFieldValue('attachmentDelaySeconds', config.attachmentDelaySeconds ?? 4, force);
   setFieldValue('jitterSeconds', config.jitterSeconds ?? 4, force);
@@ -1301,7 +1461,7 @@ async function parseStoredPdfWithBridge({ quiet = false } = {}) {
     tone: 'warning',
     title: bridgeUnavailable ? '这份 PDF 需要增强识别' : '没有识别到可靠正文',
     message: bridgeUnavailable
-      ? '原文件已经保留。运行完整包根目录里的“安装桌面桥接-mac.command”一次，再点“重新识别”；普通文本型 PDF 不需要这一步。'
+      ? '原文件已经保留。运行完整包根目录里的“install-openclaw-macos.command”一次，再点“重新识别”；普通文本型 PDF 不需要这一步。'
       : '这可能是一份扫描版或受保护 PDF。可以再次识别，也可以直接在下方编辑区输入内容。',
     actions: true
   });
@@ -1370,12 +1530,21 @@ function bindResumeTabs() {
 }
 
 function bindExplicitCollapsibles() {
+  const schemaKey = 'jobclaw.collapse.schema';
+  const schema = '2.0.0-collapsed-defaults.1';
+  const resetToCollapsed = localStorage.getItem(schemaKey) !== schema;
   for (const detail of document.querySelectorAll('details[data-collapsible]')) {
     const key = `jobclaw.collapse.${detail.dataset.collapsible}`;
-    const saved = localStorage.getItem(key);
-    if (saved !== null) detail.open = saved === 'open';
+    if (resetToCollapsed) {
+      detail.open = false;
+      localStorage.removeItem(key);
+    } else {
+      const saved = localStorage.getItem(key);
+      detail.open = saved === 'open';
+    }
     detail.addEventListener('toggle', () => localStorage.setItem(key, detail.open ? 'open' : 'closed'));
   }
+  if (resetToCollapsed) localStorage.setItem(schemaKey, schema);
 }
 
 function bindDirtyTracking() {
@@ -1574,14 +1743,21 @@ async function saveSettings() {
   const config = {
     ...old,
     executionMode: old.executionMode === 'auto' ? 'auto' : 'review',
-    batchStrategy: $('batchStrategy').value || 'precise',
+    batchStrategy: normalizedBatchStrategy($('batchStrategy').value),
     massApplyAnalysis: $('massApplyAnalysis').value || 'fast',
+    greetingStyle: $('greetingStyle').value || 'human-project',
     pacingPreset: $('pacingPreset').value || 'standard',
     queueWarmup: Number($('queueWarmup').value || 4),
     dryRun: $('dryRun').checked,
     dailyTarget: Number($('dailyTarget').value || 30),
     discoveryLimit: Number($('discoveryLimit').value || 150),
     maxPerCompanyPerDay: Number($('maxPerCompanyPerDay').value || 3),
+    maxSearchTasks: Number($('maxSearchTasks').value || 120),
+    maxJobsPerTask: Number($('maxJobsPerTask').value || 20),
+    stagnationLimit: Number($('stagnationLimit').value || 8),
+    dedupeWindowDays: Number($('dedupeWindowDays').value || 30),
+    lowQualityPolicy: $('lowQualityPolicy').value || 'skip-obvious',
+    lowQualityThreshold: Number($('lowQualityThreshold').value || 24),
     minScore: Number($('minScore').value || 75),
     betweenJobsSeconds: Math.max(6, Math.min(120, Number($('betweenJobsSeconds').value || 9))),
     attachmentDelaySeconds: Math.max(1.5, Math.min(15, Number($('attachmentDelaySeconds').value || 3))),
@@ -1596,9 +1772,11 @@ async function saveSettings() {
     dailyReportTime: $('dailyReportTime').value || '20:30',
     dailyReportNotification: $('dailyReportNotification').checked,
     targetLocations: csv($('locations').value),
-    employmentTypes: csv($('types').value),
-    experiences: csv($('experience').value),
-    degrees: csv($('degree').value),
+    expandNationwideToCities: $('expandNationwideToCities').checked,
+    cityRotationCities: csv($('cityRotationCities').value),
+    employmentTypes: [$('types').value || '不限'],
+    experiences: [$('experience').value || '不限'],
+    degrees: [$('degree').value || '不限'],
     salary: $('salary').value.trim() || '不限',
     sendResumeImage: $('sendImage').checked,
     sendOnlineResume: $('sendOnline').checked,
@@ -1626,17 +1804,31 @@ async function setExecutionMode(mode) {
   await refresh({ forms: false });
 }
 
+async function setBatchStrategy(strategy) {
+  const normalized = normalizedBatchStrategy(strategy);
+  const old = state.config || {};
+  if (normalizedBatchStrategy(old.batchStrategy) === normalized) return;
+  const result = await send('SAVE_CONFIG', { config: { ...old, batchStrategy: normalized } });
+  if (!result.ok) return showToast(result.error || '海投策略切换失败', true);
+  showToast(normalized === 'full-mass' ? '已切换为完全海投' : '已切换为安全海投');
+  await refresh({ forms: true, forceForms: true });
+}
+
 function bindActions() {
   for (const button of document.querySelectorAll('[data-execution-mode]')) {
     button.addEventListener('click', () => setExecutionMode(button.dataset.executionMode));
   }
-  $('startTask').addEventListener('click', async () => {
+  for (const button of document.querySelectorAll('[data-batch-strategy]')) {
+    button.addEventListener('click', () => setBatchStrategy(button.dataset.batchStrategy));
+  }
+  async function startTaskFromPanel() {
     const button = $('startTask');
     const label = button.querySelector('span');
+    const requestId = crypto.randomUUID();
     button.disabled = true;
     if (label) label.textContent = '正在连接…';
     try {
-      const result = await send('START');
+      const result = await send('START', { requestId }, { timeoutMs: 17500, label: '启动任务' });
       if (!result.ok) {
         showToast(result.error || '启动失败', true);
         if (/投递.*方向|选择.*岗位方向/.test(String(result.error || ''))) {
@@ -1644,12 +1836,24 @@ function bindActions() {
           activateResumeView('profile');
           requestAnimationFrame(() => $('directionPlanCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
         }
-      } else showToast(state.config?.executionMode === 'auto' ? '全自动投递已启动' : '人工确认筛选已启动');
+      } else if (result.alreadyStarting) {
+        showToast('启动请求已在处理中 请稍候');
+      } else {
+        showToast(result.navigating ? '正在打开职位页 页面加载后会自动开始' : (state.config?.executionMode === 'auto' ? '全自动投递已启动' : '人工确认筛选已启动'));
+      }
     } finally {
-      button.disabled = false;
-      if (label) label.textContent = '开始采集';
       await refresh({ forms: false });
+      const latestStarting = state.workflow?.phase === 'starting' || state.workflow?.startup?.state === 'starting';
+      button.disabled = Boolean(latestStarting || (state.workflow?.running && !state.workflow?.paused));
+      if (label) label.textContent = latestStarting ? '正在连接…' : '开始采集';
     }
+  }
+
+  $('startTask').addEventListener('click', startTaskFromPanel);
+  $('retryStartup')?.addEventListener('click', startTaskFromPanel);
+  $('openBossJobs')?.addEventListener('click', async () => {
+    const result = await send('OPEN_BOSS_JOBS');
+    showToast(result.ok ? '已打开 BOSS 职位页 请等待页面加载后重试' : (result.error || '打开职位页失败'), !result.ok);
   });
   $('pauseTask').addEventListener('click', async () => {
     const result = await send('PAUSE');
@@ -1802,9 +2006,31 @@ function bindActions() {
   });
 
   $('saveSettings').addEventListener('click', saveSettings);
+  $('probeAndRepair').addEventListener('click', async () => {
+    const button = $('probeAndRepair');
+    setBusy(button, true, '检测中…', '检测页面');
+    const result = await send('PROBE_AND_REPAIR');
+    setBusy(button, false, '', '检测页面');
+    showToast(result.ok ? (result.result?.message || 'BOSS 页面连接正常') : (result.error || '检测失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('resetAndResume').addEventListener('click', async () => {
+    const button = $('resetAndResume');
+    setBusy(button, true, '恢复中…', '重置并继续');
+    const result = await send('RESET_AND_RESUME');
+    setBusy(button, false, '', '重置并继续');
+    showToast(result.ok ? (result.message || '已重置并继续任务') : (result.error || '恢复失败'), !result.ok);
+    await refresh({ forms: false });
+  });
   $('resetSafety').addEventListener('click', async () => {
     const result = await send('RESET_SAFETY');
     showToast(result.ok ? '安全熔断已重置' : (result.error || '重置失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('clearJobHistory').addEventListener('click', async () => {
+    if (!confirm('只清除最近看过岗位的去重记忆 不会删除真实投递记录 是否继续')) return;
+    const result = await send('CLEAR_JOB_HISTORY');
+    showToast(result.ok ? '岗位去重记忆已清除' : (result.error || '清除失败'), !result.ok);
     await refresh({ forms: false });
   });
   $('checkUpdate').addEventListener('click', async () => {

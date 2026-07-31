@@ -17,8 +17,8 @@ const manifest = JSON.parse(await readFile(`${out}/manifest.json`, 'utf8'));
 await writeFile('dist/build-info.json', JSON.stringify({
   version: manifest.version,
   versionName: manifest.version_name,
-  baseline: 'JobClaw v1.7.0',
+  baseline: 'JobClaw v2.0.0',
   builtAt: new Date().toISOString(),
-  runtimeModules: ['lib/conversation-identity.js', 'lib/task-state.js', 'lib/job-priority.js', 'lib/safety-control.js', 'lib/company-verifier.js', 'lib/deduplication.js', 'lib/update-checker.js', 'lib/platform-adapter.js']
+  runtimeModules: ['lib/conversation-identity.js', 'lib/task-state.js', 'lib/job-priority.js', 'lib/safety-control.js', 'lib/company-verifier.js', 'lib/deduplication.js', 'lib/update-checker.js', 'lib/platform-adapter.js', 'lib/search-filters.js', 'lib/job-quality.js']
 }, null, 2));
 console.log('BUILD_OK');

@@ -5,15 +5,127 @@ import { rerankPending } from './lib/job-priority.js';
 import { computeRateLimitDecision, evaluateStrategy, normalizeStrategy, recordRateAction, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from './lib/safety-control.js';
 import { companyCacheKey, companyVerificationExpired, heuristicCompanyVerification, mergeCompanyVerification } from './lib/company-verifier.js';
 import { createHistoryEntry, findDuplicate } from './lib/deduplication.js';
+import { createSeenJobEntry, evaluateJobQuality, findSeenDuplicate } from './lib/job-quality.js';
+import { BOSS_FILTER_OPTIONS, normalizeBossFilter, normalizeCityList, normalizeSearchConfig, roundRobinSearchTasks } from './lib/search-filters.js';
 import { normalizeRelease } from './lib/update-checker.js';
+import { buildBossSearchUrl, collectBossCityEntries, mergeBossCityMaps, normalizeBossCityName, resolveBossCityCode } from './lib/city-routing.js';
 
 const BRIDGE_ENDPOINTS = ['http://127.0.0.1:17899', 'http://localhost:17899'];
+const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
 const NATIVE_BRIDGE_HOST = 'com.jobclaw.bridge';
 let lastBridgeSnapshotAt = 0;
 let bridgeUnavailableUntil = 0;
 let bridgeLastError = '';
-const EXPECTED_CONTENT_VERSION = '1.7.0';
+const EXPECTED_CONTENT_VERSION = '2.0.0';
+const EXPECTED_CONTENT_BUILD = '2.0.0-strategy-filters.1';
 const CONTENT_SCRIPT_FILE = 'content-v37.js';
+const STARTUP_TOTAL_TIMEOUT_MS = 15000;
+const STARTUP_STALE_AFTER_MS = 30000;
+const BOSS_PROBE_TIMEOUT_MS = 2200;
+const BOSS_COMMAND_TIMEOUT_MS = 4200;
+const BOSS_TAB_READY_TIMEOUT_MS = 6500;
+const BOSS_CITY_DIRECTORY_ENDPOINTS = [
+  'https://www.zhipin.com/wapi/zpgeek/common/data/citysites.json',
+  'https://www.zhipin.com/wapi/zpCommon/data/city.json'
+];
+const BOSS_CITY_DIRECTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+let bossCityDirectoryMemory = null;
+
+async function loadBossCityDirectory({ force = false } = {}) {
+  if (!force && bossCityDirectoryMemory?.map instanceof Map && bossCityDirectoryMemory.map.size) return bossCityDirectoryMemory;
+  const { bossCityDirectory = {} } = await storage.get('bossCityDirectory').catch(() => ({ bossCityDirectory: {} }));
+  const cachedAt = Number(bossCityDirectory.updatedAt || 0);
+  const cachedMap = mergeBossCityMaps(bossCityDirectory.entries || {});
+  if (!force && cachedAt > 0 && Date.now() - cachedAt < BOSS_CITY_DIRECTORY_TTL_MS && cachedMap.size) {
+    bossCityDirectoryMemory = { map: cachedMap, source: bossCityDirectory.source || 'cache', updatedAt: cachedAt };
+    return bossCityDirectoryMemory;
+  }
+
+  const fetchedMaps = [];
+  const sources = [];
+  for (const endpoint of BOSS_CITY_DIRECTORY_ENDPOINTS) {
+    try {
+      const response = await withTimeout(fetch(endpoint, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: { accept: 'application/json,text/plain,*/*' }
+      }), 3500, '读取BOSS城市目录');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await withTimeout(response.json(), 1800, '解析BOSS城市目录');
+      const entries = collectBossCityEntries(payload);
+      if (entries.size) {
+        fetchedMaps.push(entries);
+        sources.push(endpoint);
+      }
+    } catch (error) {
+      await writeEvent('warning', 'BOSS城市目录接口暂不可用，使用本地城市编码继续', {
+        endpoint,
+        error: String(error?.message || error || '')
+      }).catch(() => {});
+    }
+  }
+
+  const map = mergeBossCityMaps(cachedMap, ...fetchedMaps);
+  const updatedAt = Date.now();
+  const entries = Object.fromEntries(map);
+  await storage.set({ bossCityDirectory: { entries, updatedAt, source: sources.length ? 'boss-api' : 'fallback' } }).catch(() => {});
+  bossCityDirectoryMemory = { map, source: sources.length ? 'boss-api' : 'fallback', updatedAt };
+  return bossCityDirectoryMemory;
+}
+
+async function buildBossSearchRoute({ city = '', keyword = '', currentUrl = '', alternate = false } = {}) {
+  const normalizedCity = normalizeBossCityName(city);
+  const directory = await loadBossCityDirectory();
+  const cityCode = resolveBossCityCode(normalizedCity, directory.map);
+  if (normalizedCity && !cityCode) {
+    return { ok: false, city: normalizedCity, keyword: String(keyword || '').trim(), error: `未找到${normalizedCity}的BOSS城市编码` };
+  }
+  let currentPath = '';
+  try { currentPath = new URL(String(currentUrl || '')).pathname; } catch {}
+  const preferPlural = alternate ? !/\/web\/geek\/jobs$/.test(currentPath) : /\/web\/geek\/jobs$/.test(currentPath);
+  const path = preferPlural ? '/web/geek/jobs' : '/web/geek/job';
+  const url = buildBossSearchUrl({
+    cityCode,
+    query: keyword,
+    baseUrl: `https://www.zhipin.com${path}`
+  });
+  const alternateUrl = buildBossSearchUrl({
+    cityCode,
+    query: keyword,
+    baseUrl: `https://www.zhipin.com${path.endsWith('/jobs') ? '/web/geek/job' : '/web/geek/jobs'}`
+  });
+  return {
+    ok: true,
+    city: normalizedCity,
+    cityCode,
+    keyword: String(keyword || '').trim(),
+    url,
+    alternateUrl,
+    source: directory.source
+  };
+}
+
+function timeoutError(label, timeoutMs) {
+  const error = new Error(`${label}超时（${Math.ceil(timeoutMs / 1000)}秒）`);
+  error.code = 'JOBCLAW_TIMEOUT';
+  error.timeoutMs = timeoutMs;
+  return error;
+}
+
+async function withTimeout(value, timeoutMs, label = '操作') {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve(value),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(timeoutError(label, timeoutMs)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 const storage = {
   get: keys => chrome.storage.local.get(keys),
   all: () => chrome.storage.local.get(null),
@@ -1000,6 +1112,93 @@ async function init() {
     patch.safetyState = { ...DEFAULTS.safetyState, ...(current.safetyState || {}) };
     patch.v170FormalReleaseMigration = true;
   }
+  if (!current.v180SearchFilterMigration) {
+    const baseConfig = patch.config || current.config || {};
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      targetLocations: Array.isArray(baseConfig.targetLocations) ? baseConfig.targetLocations : [],
+      expandNationwideToCities: baseConfig.expandNationwideToCities !== false,
+      cityRotationCities: Array.isArray(baseConfig.cityRotationCities) && baseConfig.cityRotationCities.length
+        ? baseConfig.cityRotationCities
+        : DEFAULTS.config.cityRotationCities,
+      employmentTypes: Array.isArray(baseConfig.employmentTypes) && baseConfig.employmentTypes.length ? baseConfig.employmentTypes : ['不限'],
+      experiences: Array.isArray(baseConfig.experiences) && baseConfig.experiences.length ? baseConfig.experiences : ['不限'],
+      degrees: Array.isArray(baseConfig.degrees) && baseConfig.degrees.length ? baseConfig.degrees : ['不限'],
+      salary: String(baseConfig.salary || '不限'),
+      maxSearchTasks: Math.max(1, Math.min(300, Number(baseConfig.maxSearchTasks || 120))),
+      maxJobsPerTask: Math.max(1, Math.min(100, Number(baseConfig.maxJobsPerTask || 20))),
+      stagnationLimit: Math.max(3, Math.min(30, Number(baseConfig.stagnationLimit || 8))),
+      dedupeWindowDays: Math.max(1, Math.min(180, Number(baseConfig.dedupeWindowDays || 30))),
+      lowQualityPolicy: ['rank', 'skip-obvious'].includes(baseConfig.lowQualityPolicy) ? baseConfig.lowQualityPolicy : 'skip-obvious',
+      lowQualityThreshold: Math.max(0, Math.min(60, Number(baseConfig.lowQualityThreshold ?? 24)))
+    };
+    patch.jobSeenHistory = Array.isArray(current.jobSeenHistory) ? current.jobSeenHistory.slice(-3000) : [];
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '1.8.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      taskIndex: 0,
+      cardIndex: 0,
+      processedKeys: [],
+      duplicateStreak: 0,
+      noNewStreak: 0,
+      activeRunId: null,
+      statusText: 'v2.0 海投策略与筛选核验已升级 请确认完全海投或安全海投后重新开始'
+    };
+    patch.v180SearchFilterMigration = true;
+  }
+  if (!current.v180ChatRecoveryHotfixMigration) {
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      pendingApplyId: null,
+      activeRunId: null,
+      chatRecovery: null,
+      statusText: 'v1.8 沟通恢复与消息页布局补丁已安装 请重新开始或使用重置并继续'
+    };
+    patch.chatTransition = null;
+    patch.v180ChatRecoveryHotfixMigration = true;
+  }
+  if (!current.v190StartupReliabilityMigration) {
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '1.9.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      phase: 'idle',
+      startup: { ...DEFAULTS.workflow.startup },
+      actualSearchContext: null,
+      statusText: 'v1.9 启动连接与任务诊断已升级 请刷新 BOSS 页面后重新开始'
+    };
+    patch.v190StartupReliabilityMigration = true;
+  }
+  if (!current.v200StrategyFilterGreetingMigration) {
+    const baseConfig = patch.config || current.config || {};
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      batchStrategy: normalizeStrategy(baseConfig.batchStrategy || 'safe-mass'),
+      greetingStyle: baseConfig.greetingStyle === 'natural-project' ? 'human-project' : (baseConfig.greetingStyle || 'human-project')
+    };
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '2.0.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      phase: 'idle',
+      startup: { ...DEFAULTS.workflow.startup },
+      actualSearchContext: null,
+      statusText: 'v2.0 已升级完全海投 安全海投 筛选核验和真人项目招呼语 请刷新 BOSS 页面后重新开始'
+    };
+    patch.v200StrategyFilterGreetingMigration = true;
+  }
   if (Object.keys(patch).length) await storage.set(patch);
   const { stats } = await storage.get('stats');
   if (!stats || stats.date !== today()) {
@@ -1017,6 +1216,10 @@ function publicState(all) {
   const state = safeClone(all);
   if (state?.config?.model) {
     state.config.model.apiKey = state.config.model.apiKey ? '***' : '';
+  }
+  if (Array.isArray(state?.jobSeenHistory)) {
+    state.jobSeenHistoryCount = state.jobSeenHistory.length;
+    delete state.jobSeenHistory;
   }
   if (state?.resumeImage) state.resumeImage = '[已保存]';
   if (state?.resumeSourceFile) {
@@ -1040,6 +1243,25 @@ async function patchWorkflow(patch) {
   const next = { ...DEFAULTS.workflow, ...(workflow || {}), ...(patch || {}) };
   await storage.set({ workflow: next });
   return next;
+}
+
+async function patchStartup(startupPatch = {}, workflowPatch = {}) {
+  const { workflow } = await storage.get('workflow');
+  const current = workflow || {};
+  return patchWorkflow({
+    ...workflowPatch,
+    startup: {
+      ...DEFAULTS.workflow.startup,
+      ...(current.startup || {}),
+      ...(startupPatch || {})
+    }
+  });
+}
+
+function startupIsFresh(startup = {}) {
+  return startup.state === 'starting'
+    && Number(startup.startedAt || 0) > 0
+    && Date.now() - Number(startup.startedAt || 0) < STARTUP_STALE_AFTER_MS;
 }
 
 async function changeStats(delta = {}) {
@@ -1129,6 +1351,10 @@ async function updateSearchTaskProgress(message = {}) {
     processed: Math.max(0, Number(message.processed ?? current.processed ?? 0)),
     discovered: Math.max(0, Number(message.discovered ?? current.discovered ?? 0)),
     analyzed: Math.max(0, Number(message.analyzed ?? current.analyzed ?? 0)),
+    accepted: Math.max(0, Number(message.accepted ?? current.accepted ?? 0)),
+    duplicates: Math.max(0, Number(message.duplicates ?? current.duplicates ?? 0)),
+    lowQuality: Math.max(0, Number(message.lowQuality ?? current.lowQuality ?? 0)),
+    filterFailures: Math.max(0, Number(message.filterFailures ?? current.filterFailures ?? 0)),
     failed: Math.max(0, Number(message.failed ?? current.failed ?? 0)),
     updatedAt: Date.now(),
     completedAt: message.status === 'completed' ? Date.now() : current.completedAt || null
@@ -1294,36 +1520,41 @@ const NO_RECEIVER_PATTERN = /Could not establish connection|Receiving end does n
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function receiverMatchesExpectedVersion(probe) {
-  return Boolean(probe?.ok && probe.contentVersion === EXPECTED_CONTENT_VERSION && probe.contentFile === CONTENT_SCRIPT_FILE);
+  return Boolean(probe?.ok
+    && probe.contentVersion === EXPECTED_CONTENT_VERSION
+    && probe.contentBuild === EXPECTED_CONTENT_BUILD
+    && probe.contentFile === CONTENT_SCRIPT_FILE);
 }
 
-async function waitForTabReady(tabId, timeout = 16000) {
+async function waitForTabReady(tabId, timeout = BOSS_TAB_READY_TIMEOUT_MS) {
   if (!chrome.tabs?.get) {
-    await wait(900);
+    await wait(500);
     return null;
   }
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeout) {
-    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    const tab = await withTimeout(chrome.tabs.get(tabId), 1200, '读取 BOSS 标签页').catch(() => null);
     if (tab?.status === 'complete') return tab;
-    await wait(180);
+    await wait(160);
   }
-  return chrome.tabs.get(tabId).catch(() => null);
+  return withTimeout(chrome.tabs.get(tabId), 1200, '读取 BOSS 标签页').catch(() => null);
 }
 
 async function reloadBossTab(tab, reason = 'runtime-refresh') {
   if (!tab?.id || !chrome.tabs?.reload) return tab;
-  await chrome.tabs.reload(tab.id, { bypassCache: true });
-  const ready = await waitForTabReady(tab.id);
-  await writeEvent('info', 'BOSS 页面助手已自动刷新', { reason, tabId: tab.id, contentVersion: EXPECTED_CONTENT_VERSION }).catch(() => {});
-  return ready || tab;
+  await withTimeout(chrome.tabs.reload(tab.id, { bypassCache: true }), 2500, '刷新 BOSS 页面');
+  const ready = await waitForTabReady(tab.id, BOSS_TAB_READY_TIMEOUT_MS);
+  if (!ready || ready.status !== 'complete') throw timeoutError('等待 BOSS 页面加载', BOSS_TAB_READY_TIMEOUT_MS);
+  await writeEvent('info', 'BOSS 页面助手已自动刷新', { reason, tabId: tab.id, contentVersion: EXPECTED_CONTENT_VERSION, contentBuild: EXPECTED_CONTENT_BUILD }).catch(() => {});
+  return ready;
 }
 
 async function refreshBossTabsForRuntimeVersion() {
-  const key = 'bossContentRuntimeVersion';
+  const key = 'bossContentRuntimeBuild';
   const current = await storage.get(key);
-  if (current?.[key] === EXPECTED_CONTENT_VERSION) return;
-  await storage.set({ [key]: EXPECTED_CONTENT_VERSION });
+  const expectedRuntime = `${EXPECTED_CONTENT_VERSION}:${EXPECTED_CONTENT_BUILD}`;
+  if (current?.[key] === expectedRuntime) return;
+  await storage.set({ [key]: expectedRuntime });
   if (!chrome.tabs?.query || !chrome.tabs?.reload) return;
   const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/*', 'https://app.zhipin.com/*'] }).catch(() => []);
   for (const tab of tabs || []) {
@@ -1333,8 +1564,16 @@ async function refreshBossTabsForRuntimeVersion() {
 }
 
 async function activeBossTab() {
-  const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/*', 'https://app.zhipin.com/*'] });
-  return tabs.find(tab => tab.active) || tabs[0] || null;
+  const activeCurrent = await withTimeout(chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+    url: ['https://www.zhipin.com/*', 'https://app.zhipin.com/*']
+  }), 1800, '查找当前 BOSS 页面').catch(() => []);
+  if (activeCurrent?.[0]) return activeCurrent[0];
+  const tabs = await withTimeout(chrome.tabs.query({
+    url: ['https://www.zhipin.com/*', 'https://app.zhipin.com/*']
+  }), 1800, '查找 BOSS 页面').catch(() => []);
+  return [...(tabs || [])].sort((left, right) => Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0] || null;
 }
 
 function bossConnectionError(error) {
@@ -1349,15 +1588,19 @@ function bossConnectionError(error) {
 }
 
 async function probeBossReceiver(tab) {
-  return chrome.tabs.sendMessage(tab.id, { type: 'PROBE', expectedContentVersion: EXPECTED_CONTENT_VERSION });
+  return withTimeout(
+    chrome.tabs.sendMessage(tab.id, { type: 'PROBE', expectedContentVersion: EXPECTED_CONTENT_VERSION, expectedContentBuild: EXPECTED_CONTENT_BUILD }),
+    BOSS_PROBE_TIMEOUT_MS,
+    '连接 BOSS 页面助手'
+  );
 }
 
 async function injectBossContent(tab) {
   if (!chrome.scripting?.executeScript) throw new Error('扩展缺少页面注入能力，请重新加载最新版 JobClaw');
-  await chrome.scripting.executeScript({
+  await withTimeout(chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: [CONTENT_SCRIPT_FILE]
-  });
+  }), 3200, '注入 BOSS 页面助手');
 }
 
 async function ensureBossReceiver(tab) {
@@ -1366,54 +1609,54 @@ async function ensureBossReceiver(tab) {
     throw new Error('请切换到 BOSS 直聘岗位页或沟通页');
   }
 
+  const startedAt = Date.now();
+  const remaining = () => Math.max(800, STARTUP_TOTAL_TIMEOUT_MS - (Date.now() - startedAt));
   let probe = null;
   try {
-    probe = await probeBossReceiver(tab);
+    probe = await withTimeout(probeBossReceiver(tab), Math.min(BOSS_PROBE_TIMEOUT_MS + 300, remaining()), '检查 BOSS 页面助手');
     if (receiverMatchesExpectedVersion(probe)) return probe;
   } catch (error) {
-    if (!NO_RECEIVER_PATTERN.test(String(error?.message || error))) {
+    const message = String(error?.message || error);
+    if (!NO_RECEIVER_PATTERN.test(message) && error?.code !== 'JOBCLAW_TIMEOUT') {
       throw new Error(bossConnectionError(error));
     }
   }
 
-  // 能收到响应但版本不一致，说明当前标签页仍保留旧内容脚本。必须整页刷新，
-  // 不能继续在同一页面叠加注入，否则旧 RUN 监听器仍可能执行。
-  if (probe?.ok && !receiverMatchesExpectedVersion(probe)) {
-    tab = await reloadBossTab(tab, `stale-${probe.contentVersion || 'legacy'}`);
+  // 没有接收器时先尝试轻量注入，避免一上来整页刷新导致长时间停在“连接中”。
+  if (!probe?.ok) {
+    await injectBossContent(tab).catch(() => null);
+    await wait(220);
+    const injectedProbe = await probeBossReceiver(tab).catch(() => null);
+    if (receiverMatchesExpectedVersion(injectedProbe)) return injectedProbe;
+    probe = injectedProbe || probe;
   }
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await wait(180 + attempt * 140);
-    try {
-      const currentProbe = await probeBossReceiver(tab);
-      if (receiverMatchesExpectedVersion(currentProbe)) return currentProbe;
-      if (currentProbe?.ok && !receiverMatchesExpectedVersion(currentProbe) && attempt === 0) {
-        tab = await reloadBossTab(tab, `mismatch-${currentProbe.contentVersion || 'legacy'}`);
-      }
-    } catch (error) {
-      if (!NO_RECEIVER_PATTERN.test(String(error?.message || error))) {
-        throw new Error(bossConnectionError(error));
-      }
-      if (attempt === 1) {
-        try { await injectBossContent(tab); } catch (injectError) { throw new Error(bossConnectionError(injectError)); }
-      }
-    }
+  // 能响应但版本不一致，或者注入后仍未就绪，最多刷新一次。
+  if (!receiverMatchesExpectedVersion(probe)) {
+    tab = await withTimeout(reloadBossTab(tab, `startup-${probe?.contentVersion || 'missing'}`), Math.min(BOSS_TAB_READY_TIMEOUT_MS + 2800, remaining()), '刷新并连接 BOSS 页面');
   }
-  throw new Error(`BOSS 页面助手版本未就绪（需要 ${EXPECTED_CONTENT_VERSION}）。JobClaw 已自动刷新页面，请再点一次开始。`);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (remaining() <= 900) break;
+    await wait(220 + attempt * 180);
+    const currentProbe = await probeBossReceiver(tab).catch(() => null);
+    if (receiverMatchesExpectedVersion(currentProbe)) return currentProbe;
+  }
+  throw new Error(`BOSS 页面助手连接超时。请刷新当前 BOSS 页面，确认页面加载完成后点击“重新连接”。需要 ${EXPECTED_CONTENT_VERSION} / ${EXPECTED_CONTENT_BUILD}`);
 }
 
 async function sendToBossTab(tab, message) {
   await ensureBossReceiver(tab);
   try {
-    return await chrome.tabs.sendMessage(tab.id, message);
+    return await withTimeout(chrome.tabs.sendMessage(tab.id, message), BOSS_COMMAND_TIMEOUT_MS, '向 BOSS 页面发送任务');
   } catch (error) {
-    if (!NO_RECEIVER_PATTERN.test(String(error?.message || error))) {
+    if (!NO_RECEIVER_PATTERN.test(String(error?.message || error)) && error?.code !== 'JOBCLAW_TIMEOUT') {
       throw new Error(bossConnectionError(error));
     }
     tab = await reloadBossTab(tab, 'message-receiver-lost');
     await ensureBossReceiver(tab);
     try {
-      return await chrome.tabs.sendMessage(tab.id, message);
+      return await withTimeout(chrome.tabs.sendMessage(tab.id, message), BOSS_COMMAND_TIMEOUT_MS, '重新发送 BOSS 页面任务');
     } catch (retryError) {
       throw new Error(bossConnectionError(retryError));
     }
@@ -1470,7 +1713,7 @@ async function bridge(path, body) {
     bridgeLastError = String(error?.message || error);
     if (path === '/company/verify') bridgeUnavailableUntil = Date.now() + 5 * 60 * 1000;
   }
-  throw new Error(`OpenClaw 桌面桥接未连接。请双击“安装桌面桥接-mac.command”完成安装或修复。${failures.length ? ` 诊断：${failures.join('；')}` : ''}`);
+  throw new Error(`OpenClaw 桌面桥接未连接。请双击“install-openclaw-macos.command”完成安装或修复。${failures.length ? ` 诊断：${failures.join('；')}` : ''}`);
 }
 
 async function diagnoseBridge() {
@@ -1502,7 +1745,7 @@ async function diagnoseBridge() {
     runtimeId: chrome.runtime.id,
     expectedRuntimeId: 'dkfilgjiooigjbollljdionbnnofekkh',
     attempts,
-    fix: '退出旧桥接后 双击项目根目录的“安装桌面桥接-mac.command” 安装完成后回到扩展点击检测连接',
+    fix: '退出旧桥接后 双击项目根目录的“install-openclaw-macos.command” 安装完成后回到扩展点击检测连接',
     logPaths: ['~/.jobclaw/bridge.log', '~/.jobclaw/bridge-error.log']
   };
 }
@@ -1574,6 +1817,7 @@ async function applySafetyOutcome(outcome = {}) {
       paused: true,
       phase: 'safety_stop',
       pendingApplyId: null,
+      chatRecovery: null,
       statusText: `安全熔断：${next.circuitReason || '连续任务失败'}`
     });
     await writeEvent('warning', '安全熔断已开启', { reason: next.circuitReason, failures: next.consecutiveFailures });
@@ -1593,6 +1837,76 @@ async function clearSafetyCircuit() {
   await storage.set({ safetyState: next });
   await writeEvent('info', '安全熔断已重置');
   return next;
+}
+
+async function probeAndRepairBossPage({ resume = false } = {}) {
+  let tab = await activeBossTab();
+  if (!tab) throw new Error('请先打开并登录 BOSS 直聘');
+  const probe = await ensureBossReceiver(tab);
+  if (probe?.verification || probe?.pageType === 'verification') {
+    throw new Error('检测到 BOSS 安全验证 请先在页面完成验证');
+  }
+
+  const stored = await storage.get(['workflow', 'pending']);
+  let workflow = { ...DEFAULTS.workflow, ...(stored.workflow || {}) };
+  const hasActiveDelivery = Boolean(workflow.pendingApplyId);
+  const probeHasCapabilities = probe && ['hasSearch', 'hasDetail', 'hasChat', 'cards'].some(key => Object.prototype.hasOwnProperty.call(probe, key));
+  const unusablePage = probe?.pageType === 'other'
+    || (probeHasCapabilities && !probe?.hasSearch && !probe?.hasDetail && !probe?.hasChat && Number(probe?.cards || 0) <= 0);
+  const staleChatPage = probe?.pageType === 'chat' && !hasActiveDelivery;
+  let navigated = false;
+
+  if (unusablePage || staleChatPage) {
+    await chrome.tabs.update(tab.id, { url: BOSS_JOBS_HOME_URL });
+    navigated = true;
+  }
+
+  if (!resume) {
+    return {
+      pageType: probe?.pageType || 'unknown',
+      navigated,
+      message: navigated ? '已自动切换到 BOSS 职位页 请等待页面加载' : `页面连接正常 · ${probe?.pageType || 'unknown'}`,
+      probe
+    };
+  }
+
+  await clearSafetyCircuit();
+  let dispatched = { started: false };
+  if (!workflow.pendingApplyId && !navigated) {
+    dispatched = await dispatchNextAutoPending().catch(() => ({ started: false }));
+    workflow = { ...DEFAULTS.workflow, ...((await storage.get('workflow')).workflow || {}) };
+  }
+  const hasQueued = (stored.pending || []).some(entry => entry.status === 'approved_queue');
+  const hasWork = Boolean(workflow.pendingApplyId)
+    || hasQueued
+    || (Array.isArray(workflow.tasks) && workflow.tasks.length > Number(workflow.taskIndex || 0));
+  if (!hasWork) {
+    return { pageType: probe?.pageType || 'unknown', navigated, resumed: false, message: '熔断已重置 但当前没有可继续的任务' };
+  }
+
+  workflow = await patchWorkflow({
+    running: true,
+    paused: false,
+    phase: workflow.pendingApplyId ? 'apply' : 'search',
+    chatRecovery: null,
+    statusText: workflow.pendingApplyId ? '已重置并继续当前投递队列' : '已重置并从上次进度继续采集'
+  });
+  if (navigated) {
+    setTimeout(async () => {
+      const queued = await dispatchNextAutoPending().catch(() => ({ started: false }));
+      if (!queued?.started) sendToBoss({ type: 'RUN' }).catch(() => {});
+    }, 1800);
+  } else if (!dispatched?.started) {
+    tab = await activeBossTab();
+    if (tab) await sendToBossTab(tab, { type: 'RUN' });
+  }
+  await writeEvent('info', '已完成页面检测并继续任务', { pageType: probe?.pageType, navigated, pendingApplyId: workflow.pendingApplyId || '' });
+  return {
+    pageType: probe?.pageType || 'unknown',
+    navigated,
+    resumed: true,
+    message: navigated ? '已重置并切换到职位页 页面加载后自动继续' : '已重置并从断点继续任务'
+  };
 }
 
 async function verifyCompanyForJob(job = {}, force = false) {
@@ -1655,18 +1969,61 @@ async function verifyCompanyForJob(job = {}, force = false) {
 }
 
 async function preflightJob(job = {}) {
-  const { config = {}, pending = [], deliveryHistory = [] } = await storage.get(['config', 'pending', 'deliveryHistory']);
+  const stored = await storage.get(['config', 'pending', 'deliveryHistory', 'jobSeenHistory']);
+  const config = stored.config || {};
+  const pending = stored.pending || [];
+  const deliveryHistory = stored.deliveryHistory || [];
+  const jobSeenHistory = Array.isArray(stored.jobSeenHistory) ? stored.jobSeenHistory : [];
   const duplicate = findDuplicate(job, {
     pending,
     history: deliveryHistory,
     maxPerCompanyPerDay: config.maxPerCompanyPerDay || 2,
     date: today()
   });
+  const fingerprintedJob = { ...job, jobFingerprint: duplicate.fingerprint || '' };
   if (duplicate.duplicate) {
     await changeStats({ duplicates: 1, blocked: 1 });
     return { ok: true, blocked: true, category: 'duplicate', reason: duplicate.reason, duplicate };
   }
-  const company = await verifyCompanyForJob(job);
+
+  const seenDuplicate = findSeenDuplicate(fingerprintedJob, jobSeenHistory, {
+    windowDays: config.dedupeWindowDays || 30
+  });
+  if (seenDuplicate?.duplicate) {
+    await changeStats({ duplicates: 1, blocked: 1 });
+    return {
+      ok: true,
+      blocked: true,
+      category: 'duplicate',
+      reason: seenDuplicate.reason,
+      duplicate: { ...duplicate, ...seenDuplicate }
+    };
+  }
+
+  const quality = evaluateJobQuality(fingerprintedJob);
+  const lowQualityBlocked = config.lowQualityPolicy === 'skip-obvious'
+    && (quality.hardSignals.length > 0 || quality.score < Number(config.lowQualityThreshold ?? 24));
+  const now = Date.now();
+  const cutoff = now - Math.max(1, Number(config.dedupeWindowDays || 30)) * 86400000;
+  const nextSeen = [
+    ...jobSeenHistory.filter(entry => Number(entry.seenAt || entry.createdAt || 0) >= cutoff),
+    createSeenJobEntry(fingerprintedJob, quality, now, { status: lowQualityBlocked ? 'low-quality' : 'accepted-preflight' })
+  ].slice(-4000);
+  await storage.set({ jobSeenHistory: nextSeen });
+
+  if (lowQualityBlocked) {
+    await changeStats({ lowQuality: 1, blocked: 1 });
+    return {
+      ok: true,
+      blocked: true,
+      category: 'low-quality',
+      reason: quality.hardSignals[0] || quality.signals[0] || `岗位质量分较低 ${quality.score}`,
+      quality,
+      duplicate
+    };
+  }
+
+  const company = await verifyCompanyForJob(fingerprintedJob);
   const blockUnknown = Boolean(config.blockUnknownCompanies);
   const blocked = company.riskLevel === 'high' || (blockUnknown && company.riskLevel === 'unknown');
   await changeStats(blocked ? { blocked: 1 } : company.verified ? { verified: 1 } : {});
@@ -1676,9 +2033,11 @@ async function preflightJob(job = {}) {
     category: blocked ? 'company-risk' : 'accepted',
     reason: blocked ? (company.signals?.[0] || '企业核验未通过') : '',
     company,
+    quality,
     duplicate
   };
 }
+
 
 async function checkForUpdates(force = false) {
   const currentVersion = chrome.runtime.getManifest().version;
@@ -2525,26 +2884,165 @@ function selectedDirectionItems(plan = {}) {
     .sort((left, right) => left.priority - right.priority || right.score - left.score);
 }
 
-function fallbackApplicantGreeting(job, profile) {
-  const title = String(job?.title || '该岗位').trim();
-  const skills = normalizeStringList(profile?.facts?.skills, 4);
-  const direction = normalizeStringList(profile?.primaryDirections?.map(item => typeof item === 'string' ? item : item?.name), 2);
-  const evidence = skills.length ? `我的简历中有${skills.slice(0, 3).join('、')}相关项目与实践` : (profile?.summary || direction.join('、'));
-  const target = `贵公司的${title}`;
-  return `您好，我想应聘${target}岗位。${evidence ? `${evidence}，` : ''}对岗位的工作内容很感兴趣。方便的话希望进一步了解岗位和团队，谢谢。`
+function compactEvidenceText(value, maxLength = 72) {
+  return String(value || '')
+    .replace(/^[\s\-•·\d.、）)]+/, '')
+    .replace(/^(项目经历|项目名称|工作经历|实习经历|主要职责|职责|项目)[:：\s]*/i, '')
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[，,；;。.!！?？]+$/g, '')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function greetingTokens(job = {}) {
+  return uniq(String([job.title, job.description, job.cardText].filter(Boolean).join(' '))
+    .toLowerCase()
+    .split(/[^a-z0-9+#.\u4e00-\u9fa5]+/)
+    .map(item => item.trim())
+    .filter(item => item.length >= 2));
+}
+
+function cleanGreetingJobTitle(value = '') {
+  let title = compactEvidenceText(value || '这个岗位', 44)
+    .replace(/[（(](?:急聘|校招|社招|可转正|双休|高薪|base[^）)]*)[）)]/gi, '')
+    .replace(/\s+/g, '')
+    .trim();
+  title = title.replace(/[-—–|｜]\s*(?:泛抖音|抖音|电商|商业化|广告|生活服务|某事业部|业务线|急聘|双休|可转正|校招|社招).*$/i, '');
+  title = title.replace(/(?:招聘|职位)$/g, '').trim();
+  return title.slice(0, 24) || '这个岗位';
+}
+
+function looksLikeRoleInsteadOfProject(value = '') {
+  const textValue = compactEvidenceText(value, 90);
+  const role = /(?:实习生|工程师|开发岗|产品经理|运营|设计师|测试|岗位|职位|任职)/i.test(textValue);
+  const project = /(?:系统|平台|工作台|工具|应用|网站|小程序|插件|Agent|RAG|问答|项目)/i.test(textValue);
+  const action = /(?:负责|实现|搭建|设计|封装|优化|接入|重构|联调|检索|问答)/i.test(textValue);
+  return role && !project && !action;
+}
+
+function splitProjectEvidence(value = '') {
+  const clean = compactEvidenceText(value, 130)
+    .replace(/^(我|本人)(曾经|之前|主要)?/i, '')
+    .trim();
+  if (!clean || looksLikeRoleInsteadOfProject(clean)) return null;
+  const segments = clean.split(/[：:。；;]/).map(item => item.trim()).filter(Boolean);
+  let name = segments[0] || '';
+  let contribution = segments.slice(1).join('，');
+  if (!contribution) {
+    const commaParts = clean.split(/[，,]/).map(item => item.trim()).filter(Boolean);
+    name = commaParts.shift() || name;
+    contribution = commaParts.join('，');
+  }
+  name = name.replace(/^(参与|负责|开发|搭建|设计)(了|过)?/i, '').trim();
+  if (name.length > 28 && /负责|实现|开发|搭建|设计|封装|优化|接入/.test(name)) {
+    const match = name.match(/^(.{4,24}?)(?:中|项目里|项目中)?(?:主要)?(?:负责|实现|开发|搭建|设计|封装|优化|接入)(.+)$/);
+    if (match) { name = match[1].trim(); contribution = `${match[2].trim()}${contribution ? `，${contribution}` : ''}`; }
+  }
+  contribution = contribution
+    .replace(/^(主要)?(?:负责|参与|实现|开发|搭建|设计|封装|优化|接入)[:：\s]*/i, '')
+    .replace(/(?:本人|我)\s*/g, '')
+    .trim();
+  const action = contribution.split(/[，,、]/).map(item => item.trim()).filter(Boolean)
+    .find(item => /页面|前端|接口|联调|问答|检索|组件|状态|展示|流程|自动化|解析|服务|功能|模块|性能/.test(item))
+    || contribution.split(/[，,、]/).map(item => item.trim()).filter(Boolean)[0]
+    || '';
+  if (!name || name.length < 3) return null;
+  return { name: name.slice(0, 26), contribution: action.slice(0, 34) };
+}
+
+function relevantProfileEvidence(job, profile = {}) {
+  const tokens = greetingTokens(job);
+  const skills = normalizeStringList(profile?.facts?.skills, 30);
+  const matchedSkills = skills.filter(skill => {
+    const key = String(skill || '').toLowerCase();
+    return key && tokens.some(token => token.includes(key) || key.includes(token));
+  }).slice(0, 2);
+  const candidates = [
+    ...normalizeStringList(profile?.facts?.projects, 12).map(text => ({ kind: 'project', text })),
+    ...normalizeStringList(profile?.facts?.experiences, 8).map(text => ({ kind: 'experience', text }))
+  ].map(item => {
+    const parsed = splitProjectEvidence(item.text);
+    const clean = compactEvidenceText(item.text, 120);
+    if (!parsed) return null;
+    const lower = clean.toLowerCase();
+    let score = item.kind === 'project' ? 14 : 4;
+    for (const token of tokens) if (token.length >= 2 && lower.includes(token)) score += Math.min(5, token.length);
+    for (const skill of matchedSkills) if (lower.includes(String(skill).toLowerCase())) score += 9;
+    if (/负责|实现|开发|搭建|设计|封装|优化|接入|联调|检索|问答/.test(clean)) score += 7;
+    return { ...item, ...parsed, clean, score };
+  }).filter(Boolean).sort((a, b) => b.score - a.score || a.name.length - b.name.length);
+  return {
+    matchedSkills: matchedSkills.length ? matchedSkills : skills.slice(0, 2),
+    project: candidates[0] || null,
+    education: compactEvidenceText(normalizeStringList(profile?.facts?.education, 3)[0] || '', 42)
+  };
+}
+
+function compactContribution(project, skillText = '') {
+  if (!project) return '';
+  let contribution = String(project.contribution || '').trim();
+  if (!contribution && skillText) contribution = `${skillText}相关功能`;
+  contribution = contribution.replace(/^(主要)?负责/i, '').replace(/[。；;]+$/g, '').slice(0, 34);
+  return contribution;
+}
+
+function humanGreetingTemplate(job, profile, style = 'human-project') {
+  const title = cleanGreetingJobTitle(job?.title || '这个岗位');
+  const evidence = relevantProfileEvidence(job, profile);
+  const skills = evidence.matchedSkills.slice(0, 2);
+  const skillText = skills.join('、');
+  const project = evidence.project;
+  const contribution = compactContribution(project, skillText);
+  const seed = [...`${job?.company || ''}${title}`].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 3;
+  if (style === 'concise') {
+    return `您好，想问下${title}还在招吗？${project ? `我做过${project.name}${contribution ? `，主要负责${contribution}` : ''}` : skillText ? `我有${skillText}相关项目经验` : '我对岗位方向比较感兴趣'}，方便沟通下吗？`.slice(0, 120);
+  }
+  if (style === 'skill-first' && skillText) {
+    return `您好，看到你们在招${title}。我平时主要用${skillText}${project ? `，在${project.name}里负责${contribution || '相关功能开发'}` : '做项目'}，想和您具体聊聊。`.slice(0, 125);
+  }
+  const intros = [
+    `您好，看到你们在招${title}，想了解一下。`,
+    `您好，想问下${title}还在招吗？`,
+    `您好，关注到${title}这个岗位。`
+  ];
+  let middle = '';
+  if (project) {
+    middle = `我做过${project.name}${contribution ? `，主要负责${contribution}` : ''}${skillText && !contribution.toLowerCase().includes(skills[0]?.toLowerCase() || '___') ? `，技术上用过${skillText}` : ''}。`;
+  } else if (skillText) {
+    middle = `我有${skillText}相关的项目实践，做过页面和功能落地。`;
+  } else {
+    middle = '我看了岗位内容，和自己目前在做的方向比较接近。';
+  }
+  const endings = seed === 1 ? '方便沟通下吗？' : seed === 2 ? '想和您具体聊聊。' : '这个岗位现在方便聊聊吗？';
+  return `${intros[seed]}${middle}${endings}`
     .replace(/。{2,}/g, '。')
-    .slice(0, 140);
+    .replace(/，，+/g, '，')
+    .replace(/我做过([^，。]{2,18})(实习生|工程师|岗位)/g, '我有$1相关实践')
+    .trim()
+    .slice(0, 128);
 }
 
-function normalizeApplicantGreeting(result, job, profile) {
-  const raw = String(result?.greeting || '').trim();
+function fallbackApplicantGreeting(job, profile, style = 'human-project') {
+  return humanGreetingTemplate(job, profile, style);
+}
+
+function normalizeApplicantGreeting(result, job, profile, style = 'human-project') {
+  const raw = String(result?.greeting || '').replace(/\s+/g, ' ').trim();
   const reversed = /看到你的简历|你的简历|很匹配我们|匹配我们|欢迎.*沟通|期待你|候选人|我们团队|我们公司|团队主要涉及|你很匹配|方便的话来聊聊/i.test(raw);
-  const applicantVoice = /我想应聘|我希望应聘|我对.{0,20}(岗位|职位).{0,10}(感兴趣|有兴趣)|想进一步了解|希望进一步沟通/.test(raw);
-  if (!raw || reversed || !applicantVoice) return fallbackApplicantGreeting(job, profile);
-  return raw.slice(0, 160);
+  const robotic = /希望有机会加入贵公司|在真实业务中继续提升|具有良好的学习能力|对岗位的工作内容很感兴趣|期待您的回复|感谢您百忙之中|贵公司|本人具备|个人能力/i.test(raw);
+  const badProject = /我(?:之前)?做过.{0,22}(?:实习生|工程师|岗位|职位)/i.test(raw);
+  const applicantVoice = /想问下|想了解一下|看到你们在招|关注到|想和您.*聊|方便沟通/.test(raw);
+  const projectGrounded = /做过|负责|实现|开发|搭建|项目|实践|用过|主要用/.test(raw);
+  const evidence = relevantProfileEvidence(job, profile);
+  if (!raw || reversed || robotic || badProject || !applicantVoice || raw.length > 135 || (!projectGrounded && evidence.project)) {
+    return fallbackApplicantGreeting(job, profile, style);
+  }
+  return raw.slice(0, 135);
 }
 
-function fastMassAnalysis(job, profile) {
+function fastMassAnalysis(job, profile, strategy = 'safe-mass') {
+  const normalizedStrategy = normalizeStrategy(strategy);
   const jobText = [job?.title, job?.description, job?.cardText].filter(Boolean).join('\n').toLowerCase();
   const skills = normalizeStringList(profile?.facts?.skills, 20);
   const directions = normalizeStringList(profile?.primaryDirections?.map(item => typeof item === 'string' ? item : item?.name), 8);
@@ -2554,91 +3052,98 @@ function fastMassAnalysis(job, profile) {
     if (token && jobText.includes(token.toLowerCase())) matchedEvidence.push(token);
   }
   const directionMatched = directions.some(item => item && jobText.includes(String(item).toLowerCase()));
-  const score = Math.max(25, Math.min(88, 35 + matchedEvidence.length * 9 + (directionMatched ? 15 : 0)));
+  const score = Math.max(20, Math.min(90, 32 + matchedEvidence.length * 9 + (directionMatched ? 16 : 0)));
   return {
     score,
-    decision: matchedEvidence.length || directionMatched ? 'recommend' : 'cautious',
+    decision: normalizedStrategy === 'full-mass' ? 'recommend' : (matchedEvidence.length || directionMatched ? 'recommend' : 'cautious'),
     hardBlocks: [],
     strictHardBlocks: [],
     matchedEvidence: matchedEvidence.slice(0, 8),
     gaps: [],
     risks: [],
-    reason: '安全海投快速模式 仅做基础排序 不因技能 年限 专业或学历差距直接拦截',
-    greeting: fallbackApplicantGreeting(job, profile),
-    analysisMode: 'local-mass-fast'
+    reason: normalizedStrategy === 'full-mass'
+      ? '完全海投快速模式 不以技能 年限 专业 学历或岗位匹配度拦截 仅保留安全风险和去重检查'
+      : '安全海投快速模式 只拦截明确硬性冲突 重复岗位和高风险岗位 其他差距仅用于排序',
+    greeting: fallbackApplicantGreeting(job, profile, 'human-project'),
+    analysisMode: normalizedStrategy === 'full-mass' ? 'local-full-mass-fast' : 'local-safe-mass-fast'
   };
 }
 
 async function analyzeJob(job) {
   const { profile, resumeText, config } = await storage.get(['profile', 'resumeText', 'config']);
   if (!profile) throw new Error('请先生成职业画像');
-  const massMode = normalizeStrategy(config?.batchStrategy) === 'mass';
-  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile);
-  const strategyInstruction = massMode
-    ? '当前为安全海投模式。技能、技术栈、专业、学历偏差、经验年限不足和行业经历缺失通常只能放入gaps，不能直接判定reject。只有JD明确写出必须、仅限、不接受，且与用户真实条件发生不可改变冲突时，才写入hardBlocks。'
-    : '当前为精准投递模式。可以综合匹配度给出recommend、cautious或reject，但技能缺口仍应与真正不可改变的硬性冲突区分。';
+  const strategy = normalizeStrategy(config?.batchStrategy);
+  const massMode = strategy === 'full-mass' || strategy === 'safe-mass';
+  const greetingStyle = ['human-project', 'natural-project', 'concise', 'skill-first'].includes(config?.greetingStyle) ? config.greetingStyle : 'human-project';
+  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile, strategy);
+  const strategyInstruction = strategy === 'full-mass'
+    ? '当前为完全海投模式。不得因为技能、年限、专业、学历、行业经验或匹配分不足拒绝岗位，decision原则上为recommend。只识别企业诈骗、收费、账号或岗位明显异常等安全风险，硬性要求仅记录到gaps用于排序。'
+    : '当前为安全海投模式。技能、技术栈、专业、学历偏差、经验年限不足和行业经历缺失通常只放入gaps；只有JD明确写出必须、仅限、不接受且与用户真实条件存在不可改变冲突时，才写入hardBlocks并允许reject。';
   const result = await callModel([
     {
       role: 'system',
-      content: `你是为求职者服务的岗位匹配审查器，不是招聘方。用户是正在应聘岗位的求职者。任何能力、年限、项目和成果都不能超出简历事实。${strategyInstruction} 输出 JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting 是求职者发给招聘方/HR 的第一人称求职招呼语，50-110字，应使用“您好，我想应聘贵公司的……”口吻。严禁写成招聘方口吻，严禁出现“看到你的简历”“你的经历很匹配我们”“欢迎进一步沟通”“我们团队”“候选人”等表述；不得承诺薪资、到岗、年限或不存在的能力。`
+      content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting必须像本人在招聘软件里临时发出的第一条消息，65到120个中文字符，2到3句。岗位名先去掉“泛抖音、业务线、急聘、双休”等尾部标签。开头用“看到你们在招…”“想问下…还在招吗”或“关注到…岗位”这类自然说法；中间只能带一段最相关的真实项目，写清项目名和本人实际负责的一项内容，最多出现2项真实技术；结尾自然询问是否方便沟通。不能把“某某开发实习生、工程师”等职位名称说成做过的项目。禁止写贵公司、本人具备、希望加入、提升能力、学习能力强、期待回复等模板套话，不要罗列学校、到岗时间、所有技术和多个项目。招呼语风格=${greetingStyle}。`
     },
     {
       role: 'user',
-      content: `职业画像：${JSON.stringify(profile)}
-简历：${String(resumeText || '').slice(0, 15000)}
-岗位：${JSON.stringify(job)}`
+      content: `职业画像：${JSON.stringify(profile)}\n简历：${String(resumeText || '').slice(0, 15000)}\n岗位：${JSON.stringify(job)}`
     }
   ]);
   result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
-  result.greeting = normalizeApplicantGreeting(result, job, profile);
+  result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle);
   result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
   result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
-  if (result.strictHardBlocks.length) result.decision = 'reject';
-  else if (massMode && result.decision === 'reject') result.decision = 'cautious';
-  if (!massMode && result.score < Number(config?.minScore || 75) && result.decision === 'recommend') result.decision = 'cautious';
+  if (strategy === 'full-mass') result.decision = 'recommend';
+  else if (result.strictHardBlocks.length) result.decision = 'reject';
+  else if (result.decision === 'reject') result.decision = 'cautious';
   return result;
 }
 
 function createTasks(profile, config, directionPlan) {
   const directions = selectedDirectionItems(directionPlan);
-  const locations = config.targetLocations?.length ? config.targetLocations : [''];
-  const employmentTypes = config.employmentTypes?.length ? config.employmentTypes : ['不限'];
-  const tasks = [];
-  const seen = new Set();
-  for (const direction of directions) {
-    for (const keyword of direction.keywords) {
-      for (const location of locations) {
-        for (const employmentType of employmentTypes) {
-          const dedupeKey = [keyword, location, employmentType].map(value => String(value || '').trim().toLowerCase()).join('|');
-          if (seen.has(dedupeKey)) continue;
-          seen.add(dedupeKey);
-          tasks.push({
-            id: crypto.randomUUID(),
-            directionId: direction.id,
-            directionName: direction.name,
-            directionPriority: direction.priority,
-            directionScore: direction.score,
-            keyword,
-            location,
-            employmentType,
-            experience: config.experiences?.[0] || '',
-            degree: config.degrees?.[0] || '',
-            salary: config.salary || '不限',
-            attempts: 0,
-            status: 'pending',
-            progress: 0,
-            stageLabel: '等待开始',
-            processed: 0,
-            discovered: 0,
-            analyzed: 0,
-            failed: 0,
-            createdAt: Date.now()
-          });
-        }
+  const search = normalizeSearchConfig(config);
+  const groups = search.cities.map(location => {
+    const cityTasks = [];
+    const seen = new Set();
+    for (const direction of directions) {
+      for (const keyword of direction.keywords) {
+        const dedupeKey = [keyword, location, search.employmentType, search.experience, search.degree, search.salary]
+          .map(value => String(value || '').trim().toLowerCase())
+          .join('|');
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        cityTasks.push({
+          id: crypto.randomUUID(),
+          directionId: direction.id,
+          directionName: direction.name,
+          directionPriority: direction.priority,
+          directionScore: direction.score,
+          keyword,
+          location,
+          employmentType: search.employmentType,
+          experience: search.experience,
+          degree: search.degree,
+          salary: search.salary,
+          maxJobs: search.maxJobsPerTask,
+          attempts: 0,
+          status: 'pending',
+          progress: 0,
+          stageLabel: '等待开始',
+          processed: 0,
+          discovered: 0,
+          analyzed: 0,
+          accepted: 0,
+          duplicates: 0,
+          lowQuality: 0,
+          filterFailures: 0,
+          failed: 0,
+          createdAt: Date.now()
+        });
       }
     }
-  }
-  return tasks;
+    return cityTasks;
+  });
+  return roundRobinSearchTasks(groups, search.maxSearchTasks);
 }
 
 
@@ -2670,7 +3175,7 @@ async function dispatchNextAutoPending() {
     running: true,
     paused: false,
     phase: 'apply',
-    statusText: `${normalizeStrategy(config.batchStrategy) === 'mass' ? '安全海投' : '精准投递'}：${candidate.job?.title || '岗位'}（队列优先级 ${candidate.priorityRank || 1}）`,
+    statusText: `${normalizeStrategy(config.batchStrategy) === 'full-mass' ? '完全海投' : '安全海投'}：${candidate.job?.title || '岗位'}（队列优先级 ${candidate.priorityRank || 1}）`,
     pendingApplyId: candidate.id,
     activeRunId: run?.id || candidate.runId || null
   });
@@ -2946,6 +3451,28 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         reply({ ok: true, ...result });
         break;
       }
+      case 'BOSS_SEARCH_ROUTE': {
+        reply(await buildBossSearchRoute({
+          city: message.city || '',
+          keyword: message.keyword || '',
+          currentUrl: message.currentUrl || sender?.tab?.url || '',
+          alternate: Boolean(message.alternate)
+        }));
+        break;
+      }
+      case 'NAVIGATE_BOSS_SEARCH': {
+        const rawUrl = String(message.url || '').trim();
+        let target;
+        try { target = new URL(rawUrl); } catch { throw new Error('BOSS搜索地址无效'); }
+        if (target.protocol !== 'https:' || target.hostname !== 'www.zhipin.com' || !/^\/web\/geek\/jobs?$/.test(target.pathname)) {
+          throw new Error('仅允许导航到BOSS职位搜索页');
+        }
+        const tabId = Number(sender?.tab?.id || message.tabId || 0);
+        if (!tabId) throw new Error('无法确认当前BOSS标签页');
+        await chrome.tabs.update(tabId, { url: target.toString(), active: true });
+        reply({ ok: true, tabId, url: target.toString() });
+        break;
+      }
       case 'RATE_LIMIT': {
         reply(await enforceRateLimit(message.scope || 'discovery'));
         break;
@@ -2957,6 +3484,21 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
       case 'RESET_SAFETY': {
         reply({ ok: true, state: await clearSafetyCircuit() });
+        break;
+      }
+      case 'CLEAR_JOB_HISTORY': {
+        await storage.set({ jobSeenHistory: [] });
+        await writeEvent('info', '岗位去重记忆已由用户清除');
+        reply({ ok: true });
+        break;
+      }
+      case 'PROBE_AND_REPAIR': {
+        reply({ ok: true, result: await probeAndRepairBossPage({ resume: false }) });
+        break;
+      }
+      case 'RESET_AND_RESUME': {
+        const result = await probeAndRepairBossPage({ resume: true });
+        reply({ ok: true, ...result });
         break;
       }
       case 'JOB_PREFLIGHT': {
@@ -3007,7 +3549,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
             : oldKey
         };
         incoming.executionMode = incoming.executionMode === 'auto' ? 'auto' : 'review';
-        incoming.batchStrategy = normalizeStrategy(incoming.batchStrategy || config?.batchStrategy || 'precise');
+        incoming.batchStrategy = normalizeStrategy(incoming.batchStrategy || config?.batchStrategy || 'safe-mass');
         incoming.massApplyAnalysis = ['fast', 'ai'].includes(incoming.massApplyAnalysis) ? incoming.massApplyAnalysis : (config?.massApplyAnalysis || 'fast');
         incoming.pacingPreset = ['conservative', 'standard', 'efficient', 'custom'].includes(incoming.pacingPreset) ? incoming.pacingPreset : (config?.pacingPreset || 'standard');
         incoming.dryRun = Boolean(incoming.dryRun);
@@ -3024,6 +3566,19 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         incoming.companyVerificationProvider = String(incoming.companyVerificationProvider || config?.companyVerificationProvider || 'bridge');
         incoming.companyVerificationCacheDays = Math.max(1, Math.min(90, Number(incoming.companyVerificationCacheDays || config?.companyVerificationCacheDays || 14)));
         incoming.blockUnknownCompanies = Boolean(incoming.blockUnknownCompanies);
+        incoming.targetLocations = normalizeCityList(incoming.targetLocations || config?.targetLocations || []);
+        incoming.expandNationwideToCities = incoming.expandNationwideToCities !== false;
+        incoming.cityRotationCities = normalizeCityList(incoming.cityRotationCities || config?.cityRotationCities || DEFAULTS.config.cityRotationCities, DEFAULTS.config.cityRotationCities);
+        incoming.employmentTypes = [normalizeBossFilter((incoming.employmentTypes || config?.employmentTypes || ['不限'])[0], BOSS_FILTER_OPTIONS.employmentTypes)];
+        incoming.experiences = [normalizeBossFilter((incoming.experiences || config?.experiences || ['不限'])[0], BOSS_FILTER_OPTIONS.experiences)];
+        incoming.degrees = [normalizeBossFilter((incoming.degrees || config?.degrees || ['不限'])[0], BOSS_FILTER_OPTIONS.degrees)];
+        incoming.salary = normalizeBossFilter(incoming.salary || config?.salary || '不限', BOSS_FILTER_OPTIONS.salaries);
+        incoming.maxSearchTasks = Math.max(1, Math.min(300, Number(incoming.maxSearchTasks || config?.maxSearchTasks || 120)));
+        incoming.maxJobsPerTask = Math.max(1, Math.min(100, Number(incoming.maxJobsPerTask || config?.maxJobsPerTask || 20)));
+        incoming.stagnationLimit = Math.max(3, Math.min(30, Number(incoming.stagnationLimit || config?.stagnationLimit || 8)));
+        incoming.dedupeWindowDays = Math.max(1, Math.min(180, Number(incoming.dedupeWindowDays || config?.dedupeWindowDays || 30)));
+        incoming.lowQualityPolicy = ['rank', 'skip-obvious'].includes(incoming.lowQualityPolicy) ? incoming.lowQualityPolicy : (config?.lowQualityPolicy || 'skip-obvious');
+        incoming.lowQualityThreshold = Math.max(0, Math.min(60, Number(incoming.lowQualityThreshold ?? config?.lowQualityThreshold ?? 24)));
         incoming.updateCheckEnabled = incoming.updateCheckEnabled !== false;
         incoming.dailyReportEnabled = incoming.dailyReportEnabled !== false;
         incoming.dailyReportTime = /^\d{2}:\d{2}$/.test(String(incoming.dailyReportTime || '')) ? String(incoming.dailyReportTime) : (config?.dailyReportTime || '20:30');
@@ -3232,6 +3787,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         reply({ ok: true, text });
         break;
       }
+      case 'OPEN_BOSS_JOBS': {
+        const tab = await activeBossTab();
+        if (tab?.id) {
+          await withTimeout(chrome.tabs.update(tab.id, { url: BOSS_JOBS_HOME_URL }), 3000, '打开 BOSS 职位页');
+          reply({ ok: true, tabId: tab.id });
+        } else {
+          const created = await withTimeout(chrome.tabs.create({ url: BOSS_JOBS_HOME_URL, active: true }), 3000, '打开 BOSS 职位页');
+          reply({ ok: true, tabId: created?.id || null });
+        }
+        break;
+      }
       case 'PROBE_BOSS': {
         const tab = await activeBossTab();
         if (!tab) throw new Error('请先打开并登录 BOSS 直聘');
@@ -3240,58 +3806,138 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         break;
       }
       case 'START': {
-        const safety = await storage.get('safetyState');
-        if (safety.safetyState?.circuitOpen) throw new Error(`安全熔断未重置：${safety.safetyState.circuitReason || '请先检查页面状态'}`);
-        const stored = await storage.get(['profile', 'profileDraft', 'resumeText', 'config', 'directionPlan']);
-        let profile = stored.profile;
-        const config = stored.config;
-        if (!profileHasCore(profile) && profileDraftHasCore(stored.profileDraft)) {
-          profile = profileFromDraft(stored.profileDraft, profile);
-          await storage.set({ profile });
+        const requestId = String(message.requestId || crypto.randomUUID());
+        const existing = await storage.get(['workflow', 'safetyState']);
+        if (existing.safetyState?.circuitOpen) throw new Error(`安全熔断未重置：${existing.safetyState.circuitReason || '请先检查页面状态'}`);
+        if (startupIsFresh(existing.workflow?.startup)) {
+          reply({ ok: true, starting: true, alreadyStarting: true, startup: existing.workflow.startup });
+          break;
         }
-        if (!profileHasCore(profile) && String(stored.resumeText || '').trim().length >= 30) {
-          profile = buildLocalProfile(stored.resumeText || '');
-          profile.generation.mode = 'local-recovery';
-          profile.generation.label = '本地初稿';
-          const profileDraft = profileToDraft(profile, 'start-recovery');
-          await storage.set({ profile, profileDraft });
-        }
-        if (!profileHasCore(profile)) throw new Error('请先生成职业画像');
-        let directionPlan = stored.directionPlan;
-        if (!directionPlan?.items?.length) {
-          directionPlan = buildDirectionPlan(profile, null, { confirmed: false });
-          await storage.set({ directionPlan });
-        }
-        directionPlan = normalizeDirectionPlan(directionPlan, profile);
-        if (!directionPlan.confirmed) throw new Error('请先在“简历 → 职业画像”中选择要投递的岗位方向并保存');
-        if (!selectedDirectionItems(directionPlan).length) throw new Error('至少选择一个要投递的岗位方向');
-        const tasks = createTasks(profile, config, directionPlan);
-        if (!tasks.length) throw new Error('所选岗位方向没有可执行的搜索词，请补充方向关键词');
-        const tab = await activeBossTab();
-        if (!tab) throw new Error('请先打开并登录 BOSS 直聘');
-        await ensureBossReceiver(tab);
-        const workflow = {
-          ...DEFAULTS.workflow,
-          running: true,
-          paused: false,
-          phase: 'search',
-          statusText: '正在启动岗位采集',
-          tasks,
-          activeRunId: null
-        };
-        await storage.set({ workflow });
+
+        const startedAt = Date.now();
+        await patchStartup({
+          id: requestId,
+          state: 'starting',
+          step: 'local-check',
+          message: '正在检查简历与岗位方向',
+          startedAt,
+          deadlineAt: startedAt + STARTUP_TOTAL_TIMEOUT_MS,
+          completedAt: 0,
+          error: '',
+          tabId: null,
+          pageType: '',
+          transport: 'chrome-message'
+        }, {
+          running: false,
+          paused: true,
+          phase: 'starting',
+          statusText: '正在检查简历与岗位方向'
+        });
+
         try {
-          await sendToBossTab(tab, { type: 'RUN' });
-          await writeEvent('info', '任务已启动', { taskCount: workflow.tasks.length, tabId: tab.id });
-          reply({ ok: true });
+          const stored = await storage.get(['profile', 'profileDraft', 'resumeText', 'config', 'directionPlan']);
+          let profile = stored.profile;
+          const config = stored.config;
+          if (!profileHasCore(profile) && profileDraftHasCore(stored.profileDraft)) {
+            profile = profileFromDraft(stored.profileDraft, profile);
+            await storage.set({ profile });
+          }
+          if (!profileHasCore(profile) && String(stored.resumeText || '').trim().length >= 30) {
+            profile = buildLocalProfile(stored.resumeText || '');
+            profile.generation.mode = 'local-recovery';
+            profile.generation.label = '本地初稿';
+            const profileDraft = profileToDraft(profile, 'start-recovery');
+            await storage.set({ profile, profileDraft });
+          }
+          if (!profileHasCore(profile)) throw new Error('请先生成职业画像');
+          let directionPlan = stored.directionPlan;
+          if (!directionPlan?.items?.length) {
+            directionPlan = buildDirectionPlan(profile, null, { confirmed: false });
+            await storage.set({ directionPlan });
+          }
+          directionPlan = normalizeDirectionPlan(directionPlan, profile);
+          if (!directionPlan.confirmed) throw new Error('请先在“简历 → 职业画像”中选择要投递的岗位方向并保存');
+          if (!selectedDirectionItems(directionPlan).length) throw new Error('至少选择一个要投递的岗位方向');
+          const tasks = createTasks(profile, config, directionPlan);
+          if (!tasks.length) throw new Error('所选岗位方向没有可执行的搜索词，请补充方向关键词');
+
+          await patchStartup({ step: 'find-tab', message: '正在查找当前 BOSS 页面' }, { statusText: '正在查找当前 BOSS 页面' });
+          let tab = await withTimeout(activeBossTab(), 2500, '查找当前 BOSS 页面');
+          if (!tab) throw new Error('请先打开并登录 BOSS 直聘，并保持 BOSS 标签页处于当前窗口');
+          await patchStartup({ step: 'page-ready', message: '正在等待 BOSS 页面加载完成', tabId: tab.id }, { statusText: '正在等待 BOSS 页面加载完成' });
+          if (tab.status !== 'complete') tab = await waitForTabReady(tab.id, 3800) || tab;
+
+          await patchStartup({ step: 'receiver', message: '正在连接 BOSS 页面助手', tabId: tab.id }, { statusText: '正在连接 BOSS 页面助手' });
+          const probe = await withTimeout(ensureBossReceiver(tab), STARTUP_TOTAL_TIMEOUT_MS - Math.min(STARTUP_TOTAL_TIMEOUT_MS - 1200, Date.now() - startedAt), '连接 BOSS 页面助手');
+          if (probe?.verification || probe?.pageType === 'verification') throw new Error('检测到 BOSS 安全验证 请先完成验证');
+
+          const workflow = {
+            ...DEFAULTS.workflow,
+            running: true,
+            paused: false,
+            phase: 'search',
+            statusText: '正在启动岗位采集',
+            tasks,
+            activeRunId: null,
+            chatRecovery: null,
+            startup: {
+              ...DEFAULTS.workflow.startup,
+              id: requestId,
+              state: 'starting',
+              step: 'dispatch',
+              message: '正在把任务交给 BOSS 页面',
+              startedAt,
+              deadlineAt: startedAt + STARTUP_TOTAL_TIMEOUT_MS,
+              tabId: tab.id,
+              pageType: probe?.pageType || '',
+              transport: 'chrome-message'
+            }
+          };
+          await storage.set({ workflow, chatTransition: null });
+          const probeHasCapabilities = probe && ['hasSearch', 'hasDetail', 'cards'].some(key => Object.prototype.hasOwnProperty.call(probe, key));
+          const needsJobsPage = probe?.pageType === 'chat'
+            || probe?.pageType === 'other'
+            || (probeHasCapabilities && !probe?.hasSearch && !probe?.hasDetail && Number(probe?.cards || 0) <= 0);
+          if (needsJobsPage) {
+            await patchStartup({ step: 'navigate', message: '正在打开 BOSS 职位页', tabId: tab.id }, { statusText: '正在打开 BOSS 职位页' });
+            await withTimeout(chrome.tabs.update(tab.id, { url: BOSS_JOBS_HOME_URL }), 3000, '打开 BOSS 职位页');
+            await patchStartup({
+              state: 'complete', step: 'navigate', message: '职位页打开后将自动开始', completedAt: Date.now(), pageType: 'jobs'
+            }, { running: true, paused: false, phase: 'search', statusText: '职位页加载完成后将自动开始采集' });
+            await writeEvent('info', '任务已启动并自动切换到 BOSS 职位页', { taskCount: workflow.tasks.length, tabId: tab.id, previousPageType: probe?.pageType || '' });
+            reply({ ok: true, navigating: true, startup: (await storage.get('workflow')).workflow?.startup });
+            break;
+          }
+
+          await patchStartup({ step: 'dispatch', message: '正在启动岗位采集', tabId: tab.id, pageType: probe?.pageType || '' }, { statusText: '正在启动岗位采集' });
+          await withTimeout(chrome.tabs.sendMessage(tab.id, { type: 'RUN' }), BOSS_COMMAND_TIMEOUT_MS, '启动岗位采集');
+          const completed = await patchStartup({
+            state: 'complete',
+            step: 'running',
+            message: '岗位采集已启动',
+            completedAt: Date.now(),
+            error: '',
+            tabId: tab.id,
+            pageType: probe?.pageType || ''
+          }, { running: true, paused: false, phase: 'search', statusText: '岗位采集已启动' });
+          await writeEvent('info', '任务已启动', { taskCount: workflow.tasks.length, tabId: tab.id, pageType: probe?.pageType || '' });
+          reply({ ok: true, startup: completed.startup });
         } catch (error) {
-          await patchWorkflow({
+          const messageText = bossConnectionError(error);
+          const failed = await patchStartup({
+            state: 'failed',
+            step: 'failed',
+            message: '启动失败',
+            completedAt: Date.now(),
+            error: messageText
+          }, {
             running: false,
             paused: true,
             phase: 'idle',
-            statusText: 'BOSS 页面连接失败，任务未启动'
+            statusText: messageText
           });
-          throw error;
+          await writeEvent('warning', '任务启动失败', { error: messageText, requestId }).catch(() => {});
+          reply({ ok: false, error: messageText, startup: failed.startup });
         }
         break;
       }
@@ -3486,9 +4132,18 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           };
         }
         const nextTransition = chatTransition?.pendingId === message.id ? null : chatTransition;
-        const nextHistory = message.ok && completedItem?.job
-          ? [createHistoryEntry(completedItem.job, 'sent', completedAt, { pendingId: message.id, runId: completedItem.runId || '' }), ...deliveryHistory].slice(0, 2000)
-          : deliveryHistory;
+        const cooldownMinutes = Math.max(5, Math.min(24 * 60, Number(message.cooldownMinutes || (message.failureClass === 'chat_entry' ? 360 : 90))));
+        const historyEntry = completedItem?.job
+          ? createHistoryEntry(completedItem.job, message.ok ? 'sent' : 'failed', completedAt, {
+              pendingId: message.id,
+              runId: completedItem.runId || '',
+              stage: message.stage || '',
+              failureClass: message.failureClass || '',
+              error: message.error || '',
+              cooldownUntil: message.ok ? 0 : completedAt + cooldownMinutes * 60 * 1000
+            })
+          : null;
+        const nextHistory = historyEntry ? [historyEntry, ...deliveryHistory].slice(0, 2000) : deliveryHistory;
         await storage.set({ pending: next, stats: updatedStats, chatDeliveryLedger: nextLedger, chatTransition: nextTransition, deliveryHistory: nextHistory });
         const safetyAfter = await applySafetyOutcome({ ok: Boolean(message.ok), reason: message.error || (message.ok ? '' : '投递失败') });
         const completedRun = await updateTaskRunByPending(message.id, message.ok
@@ -3584,6 +4239,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           await patchWorkflow({
             pendingApplyId: queued.id,
             activeRunId: queuedRun?.id || queued.runId || null,
+            chatRecovery: null,
             running: true,
             paused: false,
             phase: 'apply',
@@ -3594,7 +4250,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           setTimeout(() => sendToBoss({ type: 'RUN' }).catch(() => {}), pacingMs);
         } else {
           const pacingMs = Math.max(3000, Math.min(30000, Number(config.betweenJobsSeconds || 12) * 1000));
-          await patchWorkflow({ pendingApplyId: null, activeRunId: null, phase: 'search', statusText: message.ok ? `文字投递已确认，${Math.round(pacingMs / 1000)} 秒后继续筛选` : `当前岗位失败，${Math.round(pacingMs / 1000)} 秒后继续筛选` });
+          await patchWorkflow({ pendingApplyId: null, activeRunId: null, chatRecovery: null, phase: 'search', statusText: message.ok ? `文字投递已确认，${Math.round(pacingMs / 1000)} 秒后继续筛选` : `当前岗位失败，${Math.round(pacingMs / 1000)} 秒后继续筛选` });
           setTimeout(() => sendToBoss({ type: 'RUN' }).catch(() => {}), pacingMs);
         }
         reply({ ok: true });

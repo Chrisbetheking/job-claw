@@ -1,4 +1,4 @@
-# macOS / Windows
+# Operating systems
 .DS_Store
 .AppleDouble
 .LSOverride
@@ -8,6 +8,8 @@ Desktop.ini
 # Dependencies and generated output
 node_modules/
 source/node_modules/
+source/dist/
+release/
 coverage/
 *.log
 *.tmp

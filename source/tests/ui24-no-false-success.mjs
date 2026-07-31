@@ -7,5 +7,5 @@ if (content.includes("method: 'strict-existing-bubble'")) throw new Error('DOM e
 if (!content.includes('let messageSentConfirmed = false')) throw new Error('missing confirmed send gate');
 if (!content.includes("messageSentConfirmed && !draftPresent")) throw new Error('home return is not gated by confirmed text');
 if (!content.includes("content-v37.js")) throw new Error('wrong content filename');
-if (!background.includes("EXPECTED_CONTENT_VERSION = '1.7.0'")) throw new Error('background version mismatch');
+if (!background.includes("EXPECTED_CONTENT_VERSION = '2.0.0'")) throw new Error('background version mismatch');
 console.log('UI24_NO_FALSE_SUCCESS_OK');
