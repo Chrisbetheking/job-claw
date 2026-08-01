@@ -21,7 +21,7 @@ npm test
 在合并后的 `main` 提交创建标签：
 
 ```text
-v2.0.0
+v2.0.1
 ```
 
 推送标签后，`.github/workflows/release.yml` 会：

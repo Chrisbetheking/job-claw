@@ -129,7 +129,7 @@ export const DEFAULTS = {
   deliveryHistory: [],
   jobSeenHistory: [],
   updateInfo: {
-    currentVersion: '2.0.0',
+    currentVersion: '2.0.1',
     latestVersion: '',
     available: false,
     checkedAt: 0,

@@ -1,6 +1,6 @@
 (() => {
-const JOBCLAW_CONTENT_VERSION = '2.0.0';
-const JOBCLAW_CONTENT_BUILD = '2.0.0-strategy-filters.1';
+const JOBCLAW_CONTENT_VERSION = '2.0.1';
+const JOBCLAW_CONTENT_BUILD = '2.0.1-greeting-hotfix.1';
 const JOBCLAW_CONTENT_FILE = 'content-v37.js';
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
 const BOSS_CITY_NAMES = Object.freeze(['全国','北京','上海','广州','深圳','杭州','成都','南京','武汉','西安','苏州','重庆','长沙','天津','郑州','厦门','青岛','东莞','佛山','合肥','济南','福州','无锡','宁波','昆明','大连','沈阳','石家庄','南昌','南宁','贵阳','太原','哈尔滨','长春','海口','珠海','惠州','温州','嘉兴']);

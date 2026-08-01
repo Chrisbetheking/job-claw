@@ -21,7 +21,8 @@ const profile = {
       'AI留学咨询工作台：负责React页面开发、RAG问答接入和接口联调',
       '医疗问答系统：负责检索结果展示和状态管理'
     ],
-    experiences: ['AI智能体开发实习生']
+    experiences: ['AI智能体开发实习生'],
+    education: ['亚太科技大学 计算机专业 本科在读']
   }
 };
 const job = {
@@ -29,13 +30,18 @@ const job = {
   company: '字节跳动',
   description: '负责前端页面开发，熟悉React、TypeScript，有接口联调经验'
 };
-const greeting = humanGreetingTemplate(job, profile, 'human-project');
+const resumeText = `王鸿\n亚太科技大学 计算机专业 本科在读\n可立即到岗 能稳定实习5个月\n项目经历：AI留学咨询工作台：负责React页面开发、RAG问答接入和接口联调\n医疗问答系统：负责检索结果展示和状态管理`;
+const greeting = humanGreetingTemplate(job, profile, 'human-project', resumeText);
 assert.equal(cleanGreetingJobTitle(job.title), '前端开发实习生');
 assert.ok(greeting.includes('AI留学咨询工作台'), greeting);
-assert.ok(greeting.includes('前端开发实习生'), greeting);
 assert.ok(!greeting.includes('泛抖音'), greeting);
 assert.ok(!greeting.includes('做过AI智能体开发实习生'), greeting);
-assert.ok(!greeting.includes('贵公司'), greeting);
-assert.ok(greeting.length >= 45 && greeting.length <= 128, greeting.length);
+assert.ok(greeting.includes('王鸿'), greeting);
+assert.ok(greeting.includes('亚太科技大学'), greeting);
+assert.ok(greeting.includes('可立即到岗'), greeting);
+assert.ok(greeting.includes('稳定实习5个月'), greeting);
+assert.ok(greeting.includes('贵公司'), greeting);
+assert.ok(!greeting.includes('本月活跃'), greeting);
+assert.ok(greeting.length >= 120 && greeting.length <= 320, greeting.length);
 assert.equal(splitProjectEvidence('AI智能体开发实习生'), null);
 console.log('UNIT_GREETING_V2_OK', greeting);

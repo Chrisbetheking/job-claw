@@ -10,7 +10,7 @@ const [html, sidepanel, background, content, common, manifest] = await Promise.a
   readFile(`${root}/manifest.json`, 'utf8').then(JSON.parse)
 ]);
 
-if (manifest.version !== '2.0.0') throw new Error(`版本错误：${manifest.version}`);
+if (manifest.version !== '2.0.1') throw new Error(`版本错误：${manifest.version}`);
 for (const token of ['discoveryLimit: 150', 'dailyTarget: 30', "batchStrategy: 'safe-mass'", "massApplyAnalysis: 'fast'", 'maxPerCompanyPerDay: 3', 'maxConsecutiveFailures: 3']) {
   if (!common.includes(token)) throw new Error(`安全默认配置缺少：${token}`);
 }
@@ -50,7 +50,7 @@ globalThis.chrome = {
   sidePanel: { setPanelBehavior: async () => {} },
   alarms: { create: () => {}, onAlarm: { addListener: listener => { listeners.alarm = listener; } } },
   runtime: {
-    getManifest: () => ({ version: '2.0.0' }),
+    getManifest: () => ({ version: '2.0.1' }),
     onInstalled: { addListener: listener => { listeners.installed = listener; } },
     onStartup: { addListener: listener => { listeners.startup = listener; } },
     onMessage: { addListener: listener => { listeners.message = listener; } }

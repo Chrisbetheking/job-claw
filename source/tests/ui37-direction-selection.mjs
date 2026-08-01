@@ -8,7 +8,7 @@ const html = await readFile(`${root}/sidepanel.html`, 'utf8');
 const styles = await readFile(`${root}/styles.css`, 'utf8');
 const common = await readFile(`${root}/common.js`, 'utf8');
 
-if (manifest.version !== '2.0.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '2.0.1') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js not registered');
 if (!common.includes('directionPlan: null')) throw new Error('directionPlan default state missing');
 if (!html.includes('仅投递你勾选并保存的方向')) throw new Error('direction selection guidance missing');
