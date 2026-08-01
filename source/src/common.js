@@ -2,7 +2,9 @@ export const DEFAULTS = {
   config: {
     executionMode: 'review',
     batchStrategy: 'safe-mass',
-    massApplyAnalysis: 'fast',
+    massApplyAnalysis: 'auto-ai',
+    aiProviderMode: 'auto',
+    warnWithoutAi: true,
     greetingStyle: 'human-project',
     pacingPreset: 'standard',
     dryRun: false,
@@ -52,8 +54,15 @@ export const DEFAULTS = {
     model: {
       baseUrl: 'https://api.deepseek.com',
       apiKey: '',
-      model: 'deepseek-v4-pro',
-      temperature: 0.1
+      model: 'deepseek-v4-flash',
+      temperature: 0.2
+    },
+    localModel: {
+      enabled: false,
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKey: '',
+      model: 'qwen3:1.7b',
+      temperature: 0.2
     }
   },
   profile: null,
@@ -110,7 +119,10 @@ export const DEFAULTS = {
       pageType: '',
       transport: ''
     },
-    actualSearchContext: null
+    actualSearchContext: null,
+    controlRevision: 0,
+    pauseRequestedAt: 0,
+    stopRequestedAt: 0
   },
   pending: [],
   taskRuns: [],
@@ -129,7 +141,7 @@ export const DEFAULTS = {
   deliveryHistory: [],
   jobSeenHistory: [],
   updateInfo: {
-    currentVersion: '2.0.1',
+    currentVersion: '2.1.0',
     latestVersion: '',
     available: false,
     checkedAt: 0,

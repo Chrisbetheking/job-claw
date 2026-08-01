@@ -10,8 +10,8 @@ const [html, sidepanel, background, content, common, manifest] = await Promise.a
   readFile(`${root}/manifest.json`, 'utf8').then(JSON.parse)
 ]);
 
-if (manifest.version !== '2.0.1') throw new Error(`版本错误：${manifest.version}`);
-for (const token of ['discoveryLimit: 150', 'dailyTarget: 30', "batchStrategy: 'safe-mass'", "massApplyAnalysis: 'fast'", 'maxPerCompanyPerDay: 3', 'maxConsecutiveFailures: 3']) {
+if (manifest.version !== '2.1.0') throw new Error(`版本错误：${manifest.version}`);
+for (const token of ['discoveryLimit: 150', 'dailyTarget: 30', "batchStrategy: 'safe-mass'", "massApplyAnalysis: 'auto-ai'", 'maxPerCompanyPerDay: 3', 'maxConsecutiveFailures: 3']) {
   if (!common.includes(token)) throw new Error(`安全默认配置缺少：${token}`);
 }
 for (const token of ['id="discoveryLimit"', 'id="maxPerCompanyPerDay"', 'id="batchStrategy"', 'id="dryRun"', '安全调度与企业核验']) {
@@ -50,7 +50,7 @@ globalThis.chrome = {
   sidePanel: { setPanelBehavior: async () => {} },
   alarms: { create: () => {}, onAlarm: { addListener: listener => { listeners.alarm = listener; } } },
   runtime: {
-    getManifest: () => ({ version: '2.0.1' }),
+    getManifest: () => ({ version: '2.1.0' }),
     onInstalled: { addListener: listener => { listeners.installed = listener; } },
     onStartup: { addListener: listener => { listeners.startup = listener; } },
     onMessage: { addListener: listener => { listeners.message = listener; } }
@@ -63,7 +63,7 @@ await import(new URL('../dist/chrome-extension/background.js', import.meta.url).
 await new Promise(resolve => setTimeout(resolve, 50));
 if (data.config.discoveryLimit !== 150) throw new Error(`旧无限采集配置未迁移为正式版上限：${data.config.discoveryLimit}`);
 if (data.config.dailyTarget !== 150) throw new Error(`合法的旧150目标未被保留：${data.config.dailyTarget}`);
-if (data.config.model.model !== 'deepseek-v4-pro') throw new Error(`旧模型未迁移到 V4 Pro：${data.config.model.model}`);
+if (data.config.model.model !== 'deepseek-v4-flash') throw new Error(`旧模型未迁移到 V4 Flash：${data.config.model.model}`);
 if (data.config.model.apiKey !== 'preserve-me') throw new Error('迁移时丢失了 API Key');
 
 console.log(JSON.stringify({ ok: true, collectionLimit: 150, dailyTarget: 150, companyLimit: 3, safetyMigration: true }, null, 2));

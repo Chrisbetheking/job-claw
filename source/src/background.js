@@ -9,6 +9,7 @@ import { createSeenJobEntry, evaluateJobQuality, findSeenDuplicate } from './lib
 import { BOSS_FILTER_OPTIONS, normalizeBossFilter, normalizeCityList, normalizeSearchConfig, roundRobinSearchTasks } from './lib/search-filters.js';
 import { normalizeRelease } from './lib/update-checker.js';
 import { buildBossSearchUrl, collectBossCityEntries, mergeBossCityMaps, normalizeBossCityName, resolveBossCityCode } from './lib/city-routing.js';
+import { chooseAiRoute, normalizeAiProviderMode, publicAiStatus } from './lib/ai-routing.js';
 
 const BRIDGE_ENDPOINTS = ['http://127.0.0.1:17899', 'http://localhost:17899'];
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
@@ -16,8 +17,8 @@ const NATIVE_BRIDGE_HOST = 'com.jobclaw.bridge';
 let lastBridgeSnapshotAt = 0;
 let bridgeUnavailableUntil = 0;
 let bridgeLastError = '';
-const EXPECTED_CONTENT_VERSION = '2.0.1';
-const EXPECTED_CONTENT_BUILD = '2.0.1-greeting-hotfix.1';
+const EXPECTED_CONTENT_VERSION = '2.1.0';
+const EXPECTED_CONTENT_BUILD = '2.1.0-ai-pause.2';
 const CONTENT_SCRIPT_FILE = 'content-v37.js';
 const STARTUP_TOTAL_TIMEOUT_MS = 15000;
 const STARTUP_STALE_AFTER_MS = 30000;
@@ -30,6 +31,15 @@ const BOSS_CITY_DIRECTORY_ENDPOINTS = [
 ];
 const BOSS_CITY_DIRECTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let bossCityDirectoryMemory = null;
+const activeAiControllers = new Set();
+
+function abortActiveAiRequests(reason = 'cancelled') {
+  for (const controller of [...activeAiControllers]) {
+    try { controller.abort(reason); } catch {}
+  }
+  activeAiControllers.clear();
+}
+
 
 async function loadBossCityDirectory({ force = false } = {}) {
   if (!force && bossCityDirectoryMemory?.map instanceof Map && bossCityDirectoryMemory.map.size) return bossCityDirectoryMemory;
@@ -838,7 +848,7 @@ async function init() {
       discoveryLimit: 0,
       model: {
         ...baseModel,
-        model: isDeepSeek && legacyDeepSeekModel ? 'deepseek-v4-pro' : (modelName || 'deepseek-v4-pro')
+        model: isDeepSeek && legacyDeepSeekModel ? 'deepseek-v4-flash' : (modelName || 'deepseek-v4-flash')
       }
     };
     patch.ui10UnlimitedV4Migration = true;
@@ -1096,7 +1106,7 @@ async function init() {
       ...DEFAULTS.config,
       ...baseConfig,
       batchStrategy: migratedStrategy,
-      massApplyAnalysis: ['fast', 'ai'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'fast',
+      massApplyAnalysis: ['auto-ai', 'cloud', 'local', 'rules'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'auto-ai',
       pacingPreset: ['conservative', 'standard', 'efficient', 'custom'].includes(baseConfig.pacingPreset) ? baseConfig.pacingPreset : 'standard',
       dailyTarget: Math.max(1, Math.min(150, Number(baseConfig.dailyTarget || 30))),
       discoveryLimit: Math.max(1, Math.min(800, Number(baseConfig.discoveryLimit || 150))),
@@ -1218,6 +1228,36 @@ async function init() {
     });
     patch.v200FullGreetingHotfixMigration = true;
   }
+
+  if (!current.v210AiPauseMigration) {
+    const baseConfig = patch.config || current.config || {};
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      massApplyAnalysis: ['auto-ai', 'cloud', 'local', 'rules'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'auto-ai',
+      aiProviderMode: normalizeAiProviderMode(baseConfig.aiProviderMode || 'auto'),
+      warnWithoutAi: baseConfig.warnWithoutAi !== false,
+      model: {
+        ...DEFAULTS.config.model,
+        ...(baseConfig.model || {}),
+        model: String(baseConfig.model?.model || 'deepseek-v4-flash') === 'deepseek-v4-pro' ? 'deepseek-v4-flash' : String(baseConfig.model?.model || 'deepseek-v4-flash')
+      },
+      localModel: { ...DEFAULTS.config.localModel, ...(baseConfig.localModel || {}) }
+    };
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '2.1.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      phase: 'idle',
+      controlRevision: Number(current.workflow?.controlRevision || 0) + 1,
+      pauseRequestedAt: 0,
+      stopRequestedAt: 0,
+      statusText: 'v2.1 已升级 AI 路由和即时暂停 请刷新 BOSS 页面后重新开始'
+    };
+    patch.v210AiPauseMigration = true;
+  }
   if (Object.keys(patch).length) await storage.set(patch);
   const { stats } = await storage.get('stats');
   if (!stats || stats.date !== today()) {
@@ -1233,9 +1273,9 @@ async function init() {
 
 function publicState(all) {
   const state = safeClone(all);
-  if (state?.config?.model) {
-    state.config.model.apiKey = state.config.model.apiKey ? '***' : '';
-  }
+  if (state?.config?.model) state.config.model.apiKey = state.config.model.apiKey ? '***' : '';
+  if (state?.config?.localModel) state.config.localModel.apiKey = state.config.localModel.apiKey ? '***' : '';
+  state.aiStatus = publicAiStatus(all?.config || {});
   if (Array.isArray(state?.jobSeenHistory)) {
     state.jobSeenHistoryCount = state.jobSeenHistory.length;
     delete state.jobSeenHistory;
@@ -1688,6 +1728,14 @@ async function sendToBoss(message) {
   return sendToBossTab(tab, message);
 }
 
+async function broadcastBossControl(type, payload = {}) {
+  if (!chrome.tabs?.query) return [];
+  const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/*', 'https://app.zhipin.com/*'] }).catch(() => []);
+  return Promise.allSettled((tabs || []).filter(tab => tab?.id).map(tab =>
+    withTimeout(chrome.tabs.sendMessage(tab.id, { type, ...payload }), 900, `发送${type}`).catch(() => null)
+  ));
+}
+
 async function nativeBridge(path, body) {
   if (!chrome.runtime?.sendNativeMessage) throw new Error('当前 Chrome 不支持 Native Messaging');
   const response = await chrome.runtime.sendNativeMessage(NATIVE_BRIDGE_HOST, { path, body: body ?? null });
@@ -1795,7 +1843,7 @@ function bridgeSnapshot(all = {}) {
     })),
     config: {
       batchStrategy: normalizeStrategy(config.batchStrategy),
-      massApplyAnalysis: config.massApplyAnalysis || 'fast',
+      massApplyAnalysis: config.massApplyAnalysis || 'auto-ai',
       pacingPreset: config.pacingPreset || 'standard',
       dailyTarget: Number(config.dailyTarget || 30),
       dailyReportEnabled: config.dailyReportEnabled !== false,
@@ -2125,72 +2173,72 @@ function isRetryableAiOutputError(error) {
   return ['AI_TRUNCATED', 'AI_EMPTY', 'AI_INVALID_JSON', 'AI_PROFILE_INCOMPLETE'].includes(String(error?.code || ''));
 }
 
-async function requestModel(url, payload, apiKey, timeoutMs = 90000) {
+async function requestModel(url, payload, apiKey = '', timeoutMs = 90000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  activeAiControllers.add(controller);
+  const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (String(apiKey || '').trim()) headers.Authorization = `Bearer ${apiKey}`;
     return await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal
     });
   } catch (error) {
-    if (error?.name === 'AbortError') throw aiError('AI_TIMEOUT', 'AI 请求超时');
+    if (error?.name === 'AbortError') {
+      const reason = String(controller.signal.reason || '');
+      if (reason && reason !== 'timeout') throw aiError('AI_ABORTED', 'AI 请求已被暂停或停止');
+      throw aiError('AI_TIMEOUT', 'AI 请求超时');
+    }
     throw aiError('AI_NETWORK', `AI 网络请求失败：${error?.message || '连接异常'}`);
   } finally {
     clearTimeout(timer);
+    activeAiControllers.delete(controller);
   }
 }
 
 async function callModel(messages, jsonMode = true, options = {}) {
-  const { config } = await storage.get('config');
-  const model = config?.model || {};
-  if (!model.apiKey) throw aiError('AI_CONFIG', '请先在设置页填写 AI API Key');
-  const url = `${String(model.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
+  const { config = {} } = await storage.get('config');
+  const route = chooseAiRoute(options.forceRoute ? { ...config, aiProviderMode: options.forceRoute } : config);
+  if (route.route === 'rules') throw aiError('AI_CONFIG', route.reason || '未配置 AI 服务');
+  const selected = route.route === 'local' ? (config.localModel || {}) : (config.model || {});
+  const fallbackBase = route.route === 'local' ? 'http://127.0.0.1:11434/v1' : 'https://api.deepseek.com';
+  const fallbackModel = route.route === 'local' ? 'qwen3:1.7b' : 'deepseek-v4-flash';
+  const url = `${String(selected.baseUrl || fallbackBase).replace(/\/$/, '')}/chat/completions`;
   const payload = {
-    model: model.model || 'deepseek-v4-pro',
+    model: selected.model || fallbackModel,
     messages,
-    temperature: Number(options.temperature ?? model.temperature ?? 0.1),
+    temperature: Number(options.temperature ?? selected.temperature ?? 0.2),
     max_tokens: Number(options.maxTokens ?? 2800)
   };
   if (jsonMode) payload.response_format = { type: 'json_object' };
 
-  let response = await requestModel(url, payload, model.apiKey, Number(options.timeoutMs || 90000));
+  let response = await requestModel(url, payload, selected.apiKey || '', Number(options.timeoutMs || (route.route === 'local' ? 120000 : 90000)));
   let bodyText = await response.text();
-
-  // 某些兼容网关不支持 response_format，但仍能正常返回 JSON 文本。
   if (!response.ok && jsonMode && [400, 404, 422].includes(response.status) && /response[_ -]?format|json_object|unsupported/i.test(bodyText)) {
     const retryPayload = { ...payload };
     delete retryPayload.response_format;
-    response = await requestModel(url, retryPayload, model.apiKey, Number(options.timeoutMs || 90000));
+    response = await requestModel(url, retryPayload, selected.apiKey || '', Number(options.timeoutMs || (route.route === 'local' ? 120000 : 90000)));
     bodyText = await response.text();
   }
-
-  if (!response.ok) {
-    throw aiError('AI_HTTP', `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}`, { status: response.status });
-  }
+  if (!response.ok) throw aiError('AI_HTTP', `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}`, { status: response.status, route: route.route });
 
   let result;
-  try {
-    result = JSON.parse(bodyText);
-  } catch {
-    throw aiError('AI_INVALID_RESPONSE', 'AI 接口返回了无法识别的响应');
-  }
+  try { result = JSON.parse(bodyText); }
+  catch { throw aiError('AI_INVALID_RESPONSE', 'AI 接口返回了无法识别的响应', { route: route.route }); }
   const choice = result.choices?.[0];
   const content = String(choice?.message?.content || '').trim();
-  if (!content) throw aiError('AI_EMPTY', 'AI 返回为空');
-  if (choice.finish_reason === 'length') {
-    throw aiError('AI_TRUNCATED', 'AI 输出被截断', { finishReason: choice.finish_reason, partial: content });
-  }
+  if (!content) throw aiError('AI_EMPTY', 'AI 返回为空', { route: route.route });
+  if (choice.finish_reason === 'length') throw aiError('AI_TRUNCATED', 'AI 输出被截断', { finishReason: choice.finish_reason, partial: content, route: route.route });
   if (!jsonMode) return content;
   try {
-    return extractJson(content);
+    const parsed = extractJson(content);
+    Object.defineProperty(parsed, '__aiRoute', { value: route.route, enumerable: false });
+    return parsed;
   } catch (error) {
-    throw aiError('AI_INVALID_JSON', `AI 返回 JSON 不完整：${error?.message || '解析失败'}`, { partial: content });
+    throw aiError('AI_INVALID_JSON', `AI 返回 JSON 不完整：${error?.message || '解析失败'}`, { partial: content, route: route.route });
   }
 }
 
@@ -3206,28 +3254,37 @@ async function analyzeJob(job) {
   const strategy = normalizeStrategy(config?.batchStrategy);
   const massMode = strategy === 'full-mass' || strategy === 'safe-mass';
   const greetingStyle = ['human-project', 'natural-project', 'concise', 'skill-first'].includes(config?.greetingStyle) ? config.greetingStyle : 'human-project';
-  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile, strategy, resumeText);
+  const analysisPreference = String(config?.massApplyAnalysis || 'auto-ai');
+  if (analysisPreference === 'rules') return fastMassAnalysis(job, profile, strategy, resumeText);
   const strategyInstruction = strategy === 'full-mass'
     ? '当前为完全海投模式。不得因为技能、年限、专业、学历、行业经验或匹配分不足拒绝岗位，decision原则上为recommend。只识别企业诈骗、收费、账号或岗位明显异常等安全风险，硬性要求仅记录到gaps用于排序。'
     : '当前为安全海投模式。技能、技术栈、专业、学历偏差、经验年限不足和行业经历缺失通常只放入gaps；只有JD明确写出必须、仅限、不接受且与用户真实条件存在不可改变冲突时，才写入hardBlocks并允许reject。';
-  const result = await callModel([
-    {
-      role: 'system',
-      content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting要写成完整、专业但不生硬的求职自我介绍，默认170到280个中文字符，4到5句。优先按这个顺序组织：1 姓名、学校、专业和学历；2 真实到岗时间与可稳定实习时长；3 4到6项真实技术；4 2到4个真实项目；5 过去项目中本人实际负责的页面、接口、检索、表单状态、结果展示等模块；6 表达希望进一步沟通和参与真实业务。只能写简历里明确存在的事实，缺少哪项就省略，绝不能补造。不要把招聘者姓名、活跃状态、薪资、学历标签混进岗位名，也不能把“某某实习生、工程师”写成做过的项目。禁止使用“想问下某某本月活跃还在招吗”这类错误句式。可以使用“希望有机会加入贵公司，在真实业务中继续提升工程能力”这类正式表达。招呼语风格=${greetingStyle}。`
-    },
-    {
-      role: 'user',
-      content: `职业画像：${JSON.stringify(profile)}\n简历：${String(resumeText || '').slice(0, 15000)}\n岗位：${JSON.stringify(job)}`
-    }
-  ]);
-  result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
-  result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle, resumeText);
-  result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
-  result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
-  if (strategy === 'full-mass') result.decision = 'recommend';
-  else if (result.strictHardBlocks.length) result.decision = 'reject';
-  else if (result.decision === 'reject') result.decision = 'cautious';
-  return result;
+  try {
+    const result = await callModel([
+      {
+        role: 'system',
+        content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting要写成完整、专业但不生硬的求职自我介绍，默认170到280个中文字符，4到5句。优先按这个顺序组织：1 姓名、学校、专业和学历；2 真实到岗时间与可稳定实习时长；3 4到6项真实技术；4 2到4个真实项目；5 过去项目中本人实际负责的页面、接口、检索、表单状态、结果展示等模块；6 表达希望进一步沟通和参与真实业务。只能写简历里明确存在的事实，缺少哪项就省略，绝不能补造。不要把招聘者姓名、活跃状态、薪资、学历标签混进岗位名，也不能把“某某实习生、工程师”写成做过的项目。禁止使用“想问下某某本月活跃还在招吗”这类错误句式。可以使用“希望有机会加入贵公司，在真实业务中继续提升工程能力”这类正式表达。招呼语风格=${greetingStyle}。`
+      },
+      {
+        role: 'user',
+        content: `职业画像：${JSON.stringify(profile)}\n简历：${String(resumeText || '').slice(0, 15000)}\n岗位：${JSON.stringify(job)}`
+      }
+    ], true, { forceRoute: analysisPreference === 'cloud' ? 'cloud' : (analysisPreference === 'local' ? 'local' : undefined) });
+    result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
+    result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle, resumeText);
+    result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
+    result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
+    if (strategy === 'full-mass') result.decision = 'recommend';
+    else if (result.strictHardBlocks.length) result.decision = 'reject';
+    else if (result.decision === 'reject') result.decision = 'cautious';
+    return result;
+  } catch (error) {
+    if (String(error?.code || '') === 'AI_ABORTED') throw error;
+    const fallback = fastMassAnalysis(job, profile, strategy, resumeText);
+    fallback.analysisMode = 'local-semantic-fallback';
+    fallback.aiWarning = String(error?.message || 'AI服务不可用，已使用本地轻量算法');
+    return fallback;
+  }
 }
 
 function createTasks(profile, config, directionPlan) {
@@ -3681,7 +3738,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         };
         incoming.executionMode = incoming.executionMode === 'auto' ? 'auto' : 'review';
         incoming.batchStrategy = normalizeStrategy(incoming.batchStrategy || config?.batchStrategy || 'safe-mass');
-        incoming.massApplyAnalysis = ['fast', 'ai'].includes(incoming.massApplyAnalysis) ? incoming.massApplyAnalysis : (config?.massApplyAnalysis || 'fast');
+        incoming.massApplyAnalysis = ['auto-ai', 'cloud', 'local', 'rules'].includes(incoming.massApplyAnalysis) ? incoming.massApplyAnalysis : (config?.massApplyAnalysis || 'auto-ai');
+        incoming.aiProviderMode = normalizeAiProviderMode(incoming.aiProviderMode || config?.aiProviderMode || 'auto');
+        incoming.warnWithoutAi = incoming.warnWithoutAi !== false;
         incoming.pacingPreset = ['conservative', 'standard', 'efficient', 'custom'].includes(incoming.pacingPreset) ? incoming.pacingPreset : (config?.pacingPreset || 'standard');
         incoming.dryRun = Boolean(incoming.dryRun);
         incoming.dailyTarget = Math.max(1, Math.min(150, Number(incoming.dailyTarget || config?.dailyTarget || 30)));
@@ -3716,7 +3775,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         incoming.dailyReportNotification = incoming.dailyReportNotification !== false;
         incoming.rateLimits = { ...DEFAULTS.config.rateLimits, ...(config?.rateLimits || {}), ...(incoming.rateLimits || {}), deliveryMs: Math.max(6000, Number(incoming.betweenJobsSeconds || 9) * 1000), attachmentMs: Math.max(1500, Number(incoming.attachmentDelaySeconds || 3) * 1000) };
         incoming.model.baseUrl = String(incoming.model.baseUrl || 'https://api.deepseek.com').trim();
-        incoming.model.model = String(incoming.model.model || 'deepseek-v4-pro').trim();
+        incoming.model.model = String(incoming.model.model || 'deepseek-v4-flash').trim();
+        const oldLocalKey = config?.localModel?.apiKey || '';
+        incoming.localModel = {
+          ...(config?.localModel || DEFAULTS.config.localModel),
+          ...(incoming.localModel || {}),
+          enabled: Boolean(incoming.localModel?.enabled),
+          baseUrl: String(incoming.localModel?.baseUrl || 'http://127.0.0.1:11434/v1').trim(),
+          model: String(incoming.localModel?.model || 'qwen3:1.7b').trim(),
+          apiKey: incoming.localModel?.apiKey && incoming.localModel.apiKey !== '***' ? incoming.localModel.apiKey : oldLocalKey,
+          temperature: Math.max(0, Math.min(1.5, Number(incoming.localModel?.temperature ?? config?.localModel?.temperature ?? 0.2)))
+        };
         await storage.set({ config: { ...(config || {}), ...incoming } });
         await writeEvent('info', '设置已保存');
         syncBridgeSnapshot(true).catch(() => {});
@@ -3911,11 +3980,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         break;
       }
       case 'TEST_AI': {
+        const { config = {} } = await storage.get('config');
+        const status = publicAiStatus(config);
+        if (status.route === 'rules') {
+          reply({ ok: true, text: '未连接模型，本地轻量算法可用', status });
+          break;
+        }
         const text = await callModel([
           { role: 'system', content: '只回复“连接正常”。' },
           { role: 'user', content: '测试连接' }
         ], false);
-        reply({ ok: true, text });
+        reply({ ok: true, text, status });
         break;
       }
       case 'OPEN_BOSS_JOBS': {
@@ -4072,16 +4147,33 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         }
         break;
       }
-      case 'PAUSE':
-        await patchWorkflow({ paused: true, statusText: '用户已暂停' });
-        await writeEvent('info', '任务已暂停');
-        reply({ ok: true });
+      case 'PAUSE': {
+        const { workflow = {} } = await storage.get('workflow');
+        const revision = Number(workflow.controlRevision || 0) + 1;
+        abortActiveAiRequests('user-pause');
+        await patchWorkflow({ paused: true, phase: 'pausing', pauseRequestedAt: Date.now(), controlRevision: revision, statusText: '正在立即暂停…' });
+        await broadcastBossControl('PAUSE_NOW', { revision });
+        await patchWorkflow({ paused: true, phase: 'paused', statusText: '用户已暂停' });
+        await writeEvent('info', '任务已立即暂停', { revision });
+        reply({ ok: true, revision });
         break;
-      case 'STOP':
+      }
+      case 'STOP': {
+        const { workflow = {} } = await storage.get('workflow');
+        const revision = Number(workflow.controlRevision || 0) + 1;
+        abortActiveAiRequests('user-stop');
+        await patchWorkflow({ running: false, paused: true, phase: 'stopping', stopRequestedAt: Date.now(), controlRevision: revision, statusText: '正在立即停止…', pendingApplyId: null, activeRunId: null });
+        await broadcastBossControl('STOP_NOW', { revision });
         await patchWorkflow({ running: false, paused: true, phase: 'idle', statusText: '用户已停止', pendingApplyId: null, activeRunId: null });
-        await writeEvent('info', '任务已停止');
-        reply({ ok: true });
+        await writeEvent('info', '任务已立即停止', { revision });
+        reply({ ok: true, revision });
         break;
+      }
+      case 'AI_STATUS': {
+        const { config = {} } = await storage.get('config');
+        reply({ ok: true, status: publicAiStatus(config) });
+        break;
+      }
       case 'AI_JOB':
         reply({ ok: true, result: await analyzeJob(message.job) });
         break;

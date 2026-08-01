@@ -3,7 +3,7 @@ const data = {
     model: {
       baseUrl: 'https://api.deepseek.com',
       apiKey: 'test-key',
-      model: 'deepseek-v4-pro'
+      model: 'deepseek-v4-flash'
     }
   },
   resumeText: `王鸿\n计算机科学本科在读，2027 年毕业\n求职方向：前端开发实习生、AI 应用开发实习生\n具备 React、TypeScript、Tauri、AI Agent、RAG、OCR 与 ECharts 项目经验。\n项目：独立维护桌面端 AI 工具并参与前端实习。`

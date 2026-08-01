@@ -50,7 +50,7 @@ jobs:
           cp -R source/dist/chrome-extension "$STAGE/chrome-extension"
           cp -R desktop-bridge docs skills "$STAGE/"
           cp README.md CHANGELOG.md SECURITY.md LICENSE NOTICE "$STAGE/"
-          cp install-openclaw-macos.command "$STAGE/"
+          cp install-openclaw-macos.command install-local-ai-macos.command "$STAGE/"
           cd release
           zip -qr "${NAME}.zip" "${NAME}"
           sha256sum "${NAME}.zip" > "${NAME}.zip.sha256"
