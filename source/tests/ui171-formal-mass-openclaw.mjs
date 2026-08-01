@@ -19,7 +19,7 @@ for (const token of ['value="full-mass"', 'value="safe-mass"', 'id="massApplyAna
 for (const token of ['fastMassAnalysis', 'bridgeUnavailableUntil', 'NATIVE_BRIDGE_HOST', "case 'BRIDGE_DIAGNOSE'", "case 'BRIDGE_REPORT_NOW'"]) {
   if (!background.includes(token)) throw new Error(`formal background missing ${token}`);
 }
-for (const token of ["massApplyAnalysis: 'fast'", "dailyReportTime: '20:30'", "pacingPreset: 'standard'"]) {
+for (const token of ["massApplyAnalysis: 'auto-ai'", "dailyReportTime: '20:30'", "pacingPreset: 'standard'"]) {
   if (!common.includes(token)) throw new Error(`formal default missing ${token}`);
 }
 if (!safety.includes("normalized === 'full-mass'") || !safety.includes('strictHardBlocks')) throw new Error('safe mass strategy missing');

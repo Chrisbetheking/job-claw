@@ -2,13 +2,14 @@ import { DEFAULTS, safeClone, today, uniq } from './common.js';
 import { normalizeConversationIdentity, deriveConversationReservationKey, sameRecruiterReservation } from './lib/conversation-identity.js';
 import { TERMINAL_RUN_STATUSES, taskStageMeta } from './lib/task-state.js';
 import { rerankPending } from './lib/job-priority.js';
-import { computeRateLimitDecision, evaluateStrategy, normalizeStrategy, recordRateAction, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from './lib/safety-control.js';
+import { completeAutoRecovery, computeRateLimitDecision, evaluateStrategy, normalizeStrategy, recordRateAction, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from './lib/safety-control.js';
 import { companyCacheKey, companyVerificationExpired, heuristicCompanyVerification, mergeCompanyVerification } from './lib/company-verifier.js';
 import { createHistoryEntry, findDuplicate } from './lib/deduplication.js';
 import { createSeenJobEntry, evaluateJobQuality, findSeenDuplicate } from './lib/job-quality.js';
 import { BOSS_FILTER_OPTIONS, normalizeBossFilter, normalizeCityList, normalizeSearchConfig, roundRobinSearchTasks } from './lib/search-filters.js';
 import { normalizeRelease } from './lib/update-checker.js';
 import { buildBossSearchUrl, collectBossCityEntries, mergeBossCityMaps, normalizeBossCityName, resolveBossCityCode } from './lib/city-routing.js';
+import { chooseAiRoute, normalizeAiProviderMode, publicAiStatus } from './lib/ai-routing.js';
 
 const BRIDGE_ENDPOINTS = ['http://127.0.0.1:17899', 'http://localhost:17899'];
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
@@ -16,10 +17,11 @@ const NATIVE_BRIDGE_HOST = 'com.jobclaw.bridge';
 let lastBridgeSnapshotAt = 0;
 let bridgeUnavailableUntil = 0;
 let bridgeLastError = '';
-const EXPECTED_CONTENT_VERSION = '2.0.1';
-const EXPECTED_CONTENT_BUILD = '2.0.1-greeting-hotfix.1';
+const EXPECTED_CONTENT_VERSION = '2.2.0';
+const EXPECTED_CONTENT_BUILD = '2.2.0-auto-recovery.1';
 const CONTENT_SCRIPT_FILE = 'content-v37.js';
 const STARTUP_TOTAL_TIMEOUT_MS = 15000;
+const AUTO_RECOVERY_ALARM = 'jobclaw-auto-recovery';
 const STARTUP_STALE_AFTER_MS = 30000;
 const BOSS_PROBE_TIMEOUT_MS = 2200;
 const BOSS_COMMAND_TIMEOUT_MS = 4200;
@@ -30,6 +32,15 @@ const BOSS_CITY_DIRECTORY_ENDPOINTS = [
 ];
 const BOSS_CITY_DIRECTORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let bossCityDirectoryMemory = null;
+const activeAiControllers = new Set();
+
+function abortActiveAiRequests(reason = 'cancelled') {
+  for (const controller of [...activeAiControllers]) {
+    try { controller.abort(reason); } catch {}
+  }
+  activeAiControllers.clear();
+}
+
 
 async function loadBossCityDirectory({ force = false } = {}) {
   if (!force && bossCityDirectoryMemory?.map instanceof Map && bossCityDirectoryMemory.map.size) return bossCityDirectoryMemory;
@@ -838,7 +849,7 @@ async function init() {
       discoveryLimit: 0,
       model: {
         ...baseModel,
-        model: isDeepSeek && legacyDeepSeekModel ? 'deepseek-v4-pro' : (modelName || 'deepseek-v4-pro')
+        model: isDeepSeek && legacyDeepSeekModel ? 'deepseek-v4-flash' : (modelName || 'deepseek-v4-flash')
       }
     };
     patch.ui10UnlimitedV4Migration = true;
@@ -1096,9 +1107,9 @@ async function init() {
       ...DEFAULTS.config,
       ...baseConfig,
       batchStrategy: migratedStrategy,
-      massApplyAnalysis: ['fast', 'ai'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'fast',
+      massApplyAnalysis: ['auto-ai', 'cloud', 'local', 'rules'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'auto-ai',
       pacingPreset: ['conservative', 'standard', 'efficient', 'custom'].includes(baseConfig.pacingPreset) ? baseConfig.pacingPreset : 'standard',
-      dailyTarget: Math.max(1, Math.min(150, Number(baseConfig.dailyTarget || 30))),
+      dailyTarget: Math.max(1, Math.min(150, Number(baseConfig.dailyTarget || 150))),
       discoveryLimit: Math.max(1, Math.min(800, Number(baseConfig.discoveryLimit || 150))),
       betweenJobsSeconds: Math.max(6, Math.min(120, Number(baseConfig.betweenJobsSeconds || 9))),
       attachmentDelaySeconds: Math.max(1.5, Math.min(15, Number(baseConfig.attachmentDelaySeconds || 3))),
@@ -1218,6 +1229,72 @@ async function init() {
     });
     patch.v200FullGreetingHotfixMigration = true;
   }
+
+  if (!current.v210AiPauseMigration) {
+    const baseConfig = patch.config || current.config || {};
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      massApplyAnalysis: ['auto-ai', 'cloud', 'local', 'rules'].includes(baseConfig.massApplyAnalysis) ? baseConfig.massApplyAnalysis : 'auto-ai',
+      aiProviderMode: normalizeAiProviderMode(baseConfig.aiProviderMode || 'auto'),
+      warnWithoutAi: baseConfig.warnWithoutAi !== false,
+      model: {
+        ...DEFAULTS.config.model,
+        ...(baseConfig.model || {}),
+        model: String(baseConfig.model?.model || 'deepseek-v4-flash') === 'deepseek-v4-pro' ? 'deepseek-v4-flash' : String(baseConfig.model?.model || 'deepseek-v4-flash')
+      },
+      localModel: { ...DEFAULTS.config.localModel, ...(baseConfig.localModel || {}) }
+    };
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '2.1.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      phase: 'idle',
+      controlRevision: Number(current.workflow?.controlRevision || 0) + 1,
+      pauseRequestedAt: 0,
+      stopRequestedAt: 0,
+      statusText: 'v2.1 已升级 AI 路由和即时暂停 请刷新 BOSS 页面后重新开始'
+    };
+    patch.v210AiPauseMigration = true;
+  }
+  if (!current.v220AutoRecoveryMigration) {
+    const baseConfig = patch.config || current.config || {};
+    patch.config = {
+      ...DEFAULTS.config,
+      ...baseConfig,
+      dailyTarget: Math.max(1, Math.min(150, Number(baseConfig.dailyTarget || 150))),
+      maxConsecutiveFailures: Math.max(3, Math.min(10, Number(baseConfig.maxConsecutiveFailures || 6))),
+      autoRecoveryEnabled: baseConfig.autoRecoveryEnabled !== false,
+      autoRecoveryMaxAttempts: Math.max(1, Math.min(6, Number(baseConfig.autoRecoveryMaxAttempts || 3))),
+      autoRecoveryCooldownSeconds: Math.max(20, Math.min(1800, Number(baseConfig.autoRecoveryCooldownSeconds || 45)))
+    };
+    patch.safetyState = {
+      ...DEFAULTS.safetyState,
+      ...(current.safetyState || {}),
+      circuitOpen: false,
+      circuitReason: '',
+      circuitOpenedAt: 0,
+      autoRecovering: false,
+      recoveryPlan: null,
+      nextRecoveryAt: 0,
+      currentIncident: null,
+      lastSuggestion: ''
+    };
+    patch.stats = { ...DEFAULTS.stats, ...(current.stats || {}) };
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '2.2.0' };
+    patch.workflow = {
+      ...DEFAULTS.workflow,
+      ...(patch.workflow || current.workflow || {}),
+      running: false,
+      paused: true,
+      phase: 'idle',
+      controlRevision: Number(current.workflow?.controlRevision || 0) + 1,
+      statusText: 'v2.2 已升级异常自动诊断与恢复 请刷新 BOSS 页面后重新开始'
+    };
+    patch.v220AutoRecoveryMigration = true;
+  }
   if (Object.keys(patch).length) await storage.set(patch);
   const { stats } = await storage.get('stats');
   if (!stats || stats.date !== today()) {
@@ -1233,9 +1310,9 @@ async function init() {
 
 function publicState(all) {
   const state = safeClone(all);
-  if (state?.config?.model) {
-    state.config.model.apiKey = state.config.model.apiKey ? '***' : '';
-  }
+  if (state?.config?.model) state.config.model.apiKey = state.config.model.apiKey ? '***' : '';
+  if (state?.config?.localModel) state.config.localModel.apiKey = state.config.localModel.apiKey ? '***' : '';
+  state.aiStatus = publicAiStatus(all?.config || {});
   if (Array.isArray(state?.jobSeenHistory)) {
     state.jobSeenHistoryCount = state.jobSeenHistory.length;
     delete state.jobSeenHistory;
@@ -1688,6 +1765,14 @@ async function sendToBoss(message) {
   return sendToBossTab(tab, message);
 }
 
+async function broadcastBossControl(type, payload = {}) {
+  if (!chrome.tabs?.query) return [];
+  const tabs = await chrome.tabs.query({ url: ['https://www.zhipin.com/*', 'https://app.zhipin.com/*'] }).catch(() => []);
+  return Promise.allSettled((tabs || []).filter(tab => tab?.id).map(tab =>
+    withTimeout(chrome.tabs.sendMessage(tab.id, { type, ...payload }), 900, `发送${type}`).catch(() => null)
+  ));
+}
+
 async function nativeBridge(path, body) {
   if (!chrome.runtime?.sendNativeMessage) throw new Error('当前 Chrome 不支持 Native Messaging');
   const response = await chrome.runtime.sendNativeMessage(NATIVE_BRIDGE_HOST, { path, body: body ?? null });
@@ -1776,6 +1861,14 @@ function bridgeSnapshot(all = {}) {
   return {
     ts: Date.now(),
     stats: { ...(all.stats || {}) },
+    safetyState: {
+      currentIncident: all.safetyState?.currentIncident || null,
+      autoRecovering: Boolean(all.safetyState?.autoRecovering),
+      totalAutoRecovered: Number(all.safetyState?.totalAutoRecovered || 0),
+      totalAutoSkipped: Number(all.safetyState?.totalAutoSkipped || 0),
+      totalUserInterventions: Number(all.safetyState?.totalUserInterventions || 0),
+      lastRecoveryResult: String(all.safetyState?.lastRecoveryResult || '')
+    },
     workflow: {
       running: Boolean(all.workflow?.running),
       paused: Boolean(all.workflow?.paused),
@@ -1795,9 +1888,9 @@ function bridgeSnapshot(all = {}) {
     })),
     config: {
       batchStrategy: normalizeStrategy(config.batchStrategy),
-      massApplyAnalysis: config.massApplyAnalysis || 'fast',
+      massApplyAnalysis: config.massApplyAnalysis || 'auto-ai',
       pacingPreset: config.pacingPreset || 'standard',
-      dailyTarget: Number(config.dailyTarget || 30),
+      dailyTarget: Number(config.dailyTarget || 150),
       dailyReportEnabled: config.dailyReportEnabled !== false,
       dailyReportTime: String(config.dailyReportTime || '20:30'),
       dailyReportNotification: config.dailyReportNotification !== false
@@ -1826,10 +1919,261 @@ async function enforceRateLimit(scope = 'discovery') {
   return { ok: true, ...decision, reservedAt };
 }
 
-async function applySafetyOutcome(outcome = {}) {
-  const { config = {}, safetyState = {} } = await storage.get(['config', 'safetyState']);
-  const next = recordSafetyOutcome(config, safetyState, outcome);
+async function clearAutoRecoveryAlarm() {
+  if (typeof chrome.alarms?.clear !== 'function') return false;
+  return chrome.alarms.clear(AUTO_RECOVERY_ALARM).catch(() => false);
+}
+
+function createAutoRecoveryAlarm(when) {
+  if (typeof chrome.alarms?.create !== 'function') return false;
+  chrome.alarms.create(AUTO_RECOVERY_ALARM, { when });
+  return true;
+}
+
+async function scheduleAutoRecovery(safetyState = {}, { immediate = false } = {}) {
+  const plan = safetyState.recoveryPlan;
+  if (!safetyState.autoRecovering || !plan) return { scheduled: false };
+  const when = immediate ? Date.now() + 500 : Math.max(Date.now() + 500, Number(plan.nextRecoveryAt || safetyState.nextRecoveryAt || Date.now() + 30000));
+  await clearAutoRecoveryAlarm();
+  createAutoRecoveryAlarm(when);
+  await patchWorkflow({
+    running: true,
+    paused: true,
+    phase: 'auto_recovery',
+    pendingApplyId: null,
+    statusText: `${plan.title || '任务异常'}，系统将在 ${Math.max(1, Math.ceil((when - Date.now()) / 1000))} 秒后自动修复`
+  });
+  await writeEvent('warning', plan.title || '任务出现可恢复异常', {
+    reason: plan.reason || '',
+    suggestion: plan.suggestion || '',
+    action: plan.action || '',
+    attempt: Number(plan.attempt || 1),
+    nextRecoveryAt: when,
+    automatic: true
+  });
+  if (when - Date.now() <= 5000) setTimeout(() => attemptAutoRecovery().catch(() => {}), Math.max(600, when - Date.now()));
+  return { scheduled: true, when, plan };
+}
+
+async function resumeAfterAutoRecovery(resultText = '异常已自动修复') {
+  const all = await storage.get(['safetyState', 'stats', 'workflow', 'pending']);
+  const nextSafety = completeAutoRecovery(all.safetyState || {}, resultText);
+  const stats = { ...DEFAULTS.stats, ...(all.stats || {}), autoRecovered: Number(all.stats?.autoRecovered || 0) + 1 };
+  await storage.set({ safetyState: nextSafety, stats });
+  await clearAutoRecoveryAlarm();
+  const workflow = { ...DEFAULTS.workflow, ...(all.workflow || {}) };
+  const hasQueued = (all.pending || []).some(item => item.status === 'approved_queue');
+  const hasSearch = Array.isArray(workflow.tasks) && Number(workflow.taskIndex || 0) < workflow.tasks.length;
+  const canContinue = hasQueued || hasSearch || Boolean(workflow.pendingApplyId);
+  await patchWorkflow({
+    running: canContinue,
+    paused: !canContinue,
+    phase: hasQueued ? 'apply' : (hasSearch ? 'search' : 'idle'),
+    pendingApplyId: null,
+    activeRunId: null,
+    chatRecovery: null,
+    statusText: canContinue ? `${resultText}，正在从断点继续` : `${resultText}，当前没有待处理任务`
+  });
+  await writeEvent('success', '异常已自动修复', { result: resultText, resumed: canContinue });
+  if (canContinue) {
+    const dispatched = await dispatchNextAutoPending().catch(() => ({ started: false }));
+    if (!dispatched?.started) setTimeout(() => sendToBoss({ type: 'RUN' }).catch(() => {}), 1200);
+  }
+  return { ok: true, resumed: canContinue, result: resultText };
+}
+
+async function skipCurrentSearchTaskForRecovery(reason = '搜索组合连续异常，已自动跳过') {
+  const { workflow = {}, stats = {} } = await storage.get(['workflow', 'stats']);
+  const tasks = Array.isArray(workflow.tasks) ? [...workflow.tasks] : [];
+  const taskIndex = Math.max(0, Number(workflow.taskIndex || 0));
+  if (!tasks.length || taskIndex >= tasks.length) return { skipped: false, hasNext: false };
+  const current = tasks[taskIndex] || {};
+  tasks[taskIndex] = {
+    ...current,
+    status: 'completed',
+    progress: 100,
+    stageLabel: reason,
+    failed: Math.max(1, Number(current.failed || 0) + 1),
+    completedAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  const nextTaskIndex = taskIndex + 1;
+  const hasNext = nextTaskIndex < tasks.length;
+  await storage.set({ stats: { ...DEFAULTS.stats, ...stats, autoSkipped: Number(stats.autoSkipped || 0) + 1 } });
+  await patchWorkflow({
+    tasks,
+    taskIndex: nextTaskIndex,
+    cardIndex: 0,
+    pendingApplyId: null,
+    activeRunId: null,
+    running: hasNext,
+    paused: !hasNext,
+    phase: hasNext ? 'search' : 'idle',
+    statusText: hasNext ? `${reason}，继续下一个搜索任务` : `${reason}，当前搜索计划已完成`
+  });
+  await writeEvent('warning', '异常搜索任务已自动跳过', {
+    reason,
+    taskIndex,
+    nextTaskIndex,
+    keyword: current.keyword || '',
+    location: current.location || ''
+  });
+  return { skipped: true, hasNext, nextTaskIndex };
+}
+
+async function continueAfterRecoveryExhausted(plan = {}, reason = '') {
+  const category = String(plan.category || '');
+  if (category === 'rate_limit') {
+    const { safetyState = {} } = await storage.get('safetyState');
+    const cooldownMs = Math.max(30 * 60 * 1000, Number(plan.cooldownMs || 0));
+    const nextRecoveryAt = Date.now() + cooldownMs;
+    const nextPlan = { ...plan, attempt: 1, maxAttempts: Math.max(1, Number(plan.maxAttempts || 3)), cooldownMs, nextRecoveryAt, lastError: reason };
+    const next = {
+      ...safetyState,
+      autoRecovering: true,
+      recoveryAttempts: 1,
+      recoveryPlan: nextPlan,
+      nextRecoveryAt,
+      lastRecoveryResult: '平台仍在限频，已自动延长冷却，不需要手动重置'
+    };
+    await storage.set({ safetyState: next });
+    await writeEvent('warning', '平台持续限频，已自动延长冷却', { nextRecoveryAt, cooldownMinutes: Math.round(cooldownMs / 60000) });
+    return scheduleAutoRecovery(next);
+  }
+
+  if (['filter_failure', 'transient_network', 'unknown_soft', 'repeated_unknown'].includes(category)) {
+    const skipped = await skipCurrentSearchTaskForRecovery('多次自动修复未成功，已跳过当前搜索组合');
+    const result = await resumeAfterAutoRecovery(skipped.hasNext
+      ? '当前异常搜索组合已跳过'
+      : '异常搜索组合已结束');
+    return { ...result, skippedSearchTask: skipped.skipped };
+  }
+
+  return null;
+}
+
+async function failAutoRecovery(error, plan = {}) {
+  const all = await storage.get(['config', 'safetyState', 'stats']);
+  const current = all.safetyState || {};
+  const attempt = Math.max(1, Number(current.recoveryAttempts || plan.attempt || 1));
+  const maxAttempts = Math.max(1, Number(plan.maxAttempts || all.config?.autoRecoveryMaxAttempts || 3));
+  const reason = String(error?.message || error || '自动恢复失败');
+  if (attempt >= maxAttempts && !/验证码|安全验证|登录失效|登录过期|身份不一致/i.test(reason)) {
+    const continued = await continueAfterRecoveryExhausted(plan, reason);
+    if (continued) return continued;
+  }
+  if (/验证码|安全验证|登录失效|登录过期|身份不一致/i.test(reason) || attempt >= maxAttempts) {
+    const incident = {
+      ...(current.currentIncident || plan),
+      title: /验证码|安全验证/.test(reason) ? '检测到平台安全验证' : '自动修复多次失败',
+      reason,
+      suggestion: /验证码|安全验证/.test(reason)
+        ? '请在 BOSS 页面完成安全验证，完成后点击“继续任务”。'
+        : '请刷新或重新登录 BOSS 职位页，然后点击“继续任务”。任务进度已保留。',
+      action: 'user-action',
+      autoRecoverable: false,
+      requiresUser: true,
+      hardStop: true
+    };
+    const next = {
+      ...current,
+      circuitOpen: true,
+      circuitReason: reason,
+      circuitOpenedAt: Date.now(),
+      autoRecovering: false,
+      recoveryPlan: null,
+      nextRecoveryAt: 0,
+      currentIncident: incident,
+      lastSuggestion: incident.suggestion,
+      totalUserInterventions: Number(current.totalUserInterventions || 0) + 1,
+      lastRecoveryResult: reason
+    };
+    const stats = { ...DEFAULTS.stats, ...(all.stats || {}), userInterventions: Number(all.stats?.userInterventions || 0) + 1 };
+    await storage.set({ safetyState: next, stats });
+    await patchWorkflow({ running: false, paused: true, phase: 'safety_stop', pendingApplyId: null, statusText: `${incident.title}：${incident.suggestion}` });
+    await writeEvent('error', incident.title, { reason, suggestion: incident.suggestion, attempts: attempt });
+    return { ok: false, requiresUser: true, incident };
+  }
+
+  const nextAttempt = attempt + 1;
+  const delayMs = Math.min(30 * 60 * 1000, Math.max(30000, Number(plan.cooldownMs || 45000) * (2 ** Math.max(0, nextAttempt - 1))));
+  const nextRecoveryAt = Date.now() + delayMs;
+  const nextPlan = { ...plan, attempt: nextAttempt, nextRecoveryAt, lastError: reason };
+  const next = {
+    ...current,
+    autoRecovering: true,
+    recoveryAttempts: nextAttempt,
+    recoveryPlan: nextPlan,
+    nextRecoveryAt,
+    lastRecoveryResult: reason
+  };
   await storage.set({ safetyState: next });
+  await writeEvent('warning', '自动修复未成功，已安排再次尝试', { reason, attempt: nextAttempt, maxAttempts, nextRecoveryAt });
+  return scheduleAutoRecovery(next);
+}
+
+async function attemptAutoRecovery({ manual = false } = {}) {
+  const all = await storage.get(['config', 'safetyState', 'workflow']);
+  const safety = all.safetyState || {};
+  const plan = safety.recoveryPlan || safety.currentIncident;
+  if (!plan) {
+    if (manual) return probeAndRepairBossPage({ resume: true });
+    return { ok: true, skipped: true, message: '没有等待恢复的异常' };
+  }
+  if (plan.requiresUser || plan.hardStop) return { ok: false, requiresUser: true, incident: plan };
+  if (!manual && Number(safety.nextRecoveryAt || plan.nextRecoveryAt || 0) > Date.now() + 1000) {
+    return scheduleAutoRecovery(safety);
+  }
+
+  await patchWorkflow({ running: true, paused: true, phase: 'auto_recovery', statusText: `正在自动修复：${plan.title || '页面异常'}` });
+  try {
+    if (['repair-page', 'retry-then-skip'].includes(plan.action)) {
+      let tab = await activeBossTab();
+      let navigated = false;
+      if (!tab) {
+        tab = await chrome.tabs.create({ url: BOSS_JOBS_HOME_URL, active: true });
+        navigated = true;
+        await writeEvent('info', '未找到 BOSS 页面，已自动打开职位页', { tabId: tab?.id || null });
+      } else {
+        const probe = await ensureBossReceiver(tab).catch(() => null);
+        if (probe?.verification || probe?.pageType === 'verification') throw new Error('检测到 BOSS 安全验证');
+        const unusable = !probe || probe?.pageType === 'other'
+          || (!probe?.hasSearch && !probe?.hasDetail && !probe?.hasChat && Number(probe?.cards || 0) <= 0);
+        if (unusable) {
+          tab = await chrome.tabs.update(tab.id, { url: BOSS_JOBS_HOME_URL, active: true });
+          navigated = true;
+        }
+      }
+      if (!tab?.id) throw new Error('无法打开 BOSS 职位页');
+      if (navigated) await waitForTabReady(tab.id, Math.max(BOSS_TAB_READY_TIMEOUT_MS, 12000));
+      const repairedProbe = await ensureBossReceiver({ id: tab.id, url: tab.url || BOSS_JOBS_HOME_URL });
+      if (repairedProbe?.verification || repairedProbe?.pageType === 'verification') throw new Error('检测到 BOSS 安全验证');
+      if (!repairedProbe?.ok) throw new Error('BOSS 页面脚本仍未连接');
+      return resumeAfterAutoRecovery(navigated ? 'BOSS 职位页已重新打开并连接' : 'BOSS 页面已重新连接');
+    }
+    if (plan.action === 'cooldown') {
+      const tab = await activeBossTab();
+      if (tab) {
+        const probe = await ensureBossReceiver(tab).catch(() => null);
+        if (probe?.verification || probe?.pageType === 'verification') throw new Error('检测到 BOSS 安全验证');
+      }
+      return resumeAfterAutoRecovery('冷却结束，投递节奏已自动降低');
+    }
+    return resumeAfterAutoRecovery('当前异常已跳过');
+  } catch (error) {
+    return failAutoRecovery(error, plan);
+  }
+}
+
+async function applySafetyOutcome(outcome = {}) {
+  const { config = {}, safetyState = {}, stats = {} } = await storage.get(['config', 'safetyState', 'stats']);
+  const next = recordSafetyOutcome(config, safetyState, outcome);
+  const incident = next.currentIncident;
+  const nextStats = { ...DEFAULTS.stats, ...stats };
+  if (!outcome.ok && incident?.action === 'skip-job') nextStats.autoSkipped = Number(nextStats.autoSkipped || 0) + 1;
+  if (!outcome.ok && incident?.requiresUser) nextStats.userInterventions = Number(nextStats.userInterventions || 0) + 1;
+  await storage.set({ safetyState: next, stats: nextStats });
+
   if (next.circuitOpen) {
     await patchWorkflow({
       running: false,
@@ -1837,15 +2181,32 @@ async function applySafetyOutcome(outcome = {}) {
       phase: 'safety_stop',
       pendingApplyId: null,
       chatRecovery: null,
-      statusText: `安全熔断：${next.circuitReason || '连续任务失败'}`
+      statusText: `${incident?.title || '需要人工处理'}：${incident?.suggestion || next.circuitReason || '请检查页面后继续'}`
     });
-    await writeEvent('warning', '安全熔断已开启', { reason: next.circuitReason, failures: next.consecutiveFailures });
+    await writeEvent('warning', incident?.title || '任务已安全暂停', {
+      reason: next.circuitReason,
+      suggestion: incident?.suggestion || '',
+      category: incident?.category || '',
+      failures: next.consecutiveFailures
+    });
     chrome.notifications.create(`jobclaw-safety-${Date.now()}`, {
       type: 'basic',
       iconUrl: 'icon128.png',
-      title: 'JobClaw 已安全暂停',
-      message: next.circuitReason || '连续任务失败，请检查页面后手动恢复'
+      title: incident?.title || 'JobClaw 需要你的处理',
+      message: incident?.suggestion || next.circuitReason || '请检查页面后继续任务'
     }).catch(() => {});
+    return next;
+  }
+
+  if (!outcome.ok && next.autoRecovering) {
+    await scheduleAutoRecovery(next);
+  } else if (!outcome.ok && incident) {
+    await writeEvent('info', incident.title || '异常已自动处理', {
+      reason: incident.reason,
+      suggestion: incident.suggestion,
+      action: incident.action,
+      automatic: true
+    });
   }
   return next;
 }
@@ -1854,7 +2215,8 @@ async function clearSafetyCircuit() {
   const { safetyState = {} } = await storage.get('safetyState');
   const next = resetSafetyCircuit(safetyState);
   await storage.set({ safetyState: next });
-  await writeEvent('info', '安全熔断已重置');
+  await clearAutoRecoveryAlarm();
+  await writeEvent('info', '安全状态已重置');
   return next;
 }
 
@@ -2125,72 +2487,72 @@ function isRetryableAiOutputError(error) {
   return ['AI_TRUNCATED', 'AI_EMPTY', 'AI_INVALID_JSON', 'AI_PROFILE_INCOMPLETE'].includes(String(error?.code || ''));
 }
 
-async function requestModel(url, payload, apiKey, timeoutMs = 90000) {
+async function requestModel(url, payload, apiKey = '', timeoutMs = 90000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  activeAiControllers.add(controller);
+  const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (String(apiKey || '').trim()) headers.Authorization = `Bearer ${apiKey}`;
     return await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal
     });
   } catch (error) {
-    if (error?.name === 'AbortError') throw aiError('AI_TIMEOUT', 'AI 请求超时');
+    if (error?.name === 'AbortError') {
+      const reason = String(controller.signal.reason || '');
+      if (reason && reason !== 'timeout') throw aiError('AI_ABORTED', 'AI 请求已被暂停或停止');
+      throw aiError('AI_TIMEOUT', 'AI 请求超时');
+    }
     throw aiError('AI_NETWORK', `AI 网络请求失败：${error?.message || '连接异常'}`);
   } finally {
     clearTimeout(timer);
+    activeAiControllers.delete(controller);
   }
 }
 
 async function callModel(messages, jsonMode = true, options = {}) {
-  const { config } = await storage.get('config');
-  const model = config?.model || {};
-  if (!model.apiKey) throw aiError('AI_CONFIG', '请先在设置页填写 AI API Key');
-  const url = `${String(model.baseUrl || 'https://api.deepseek.com').replace(/\/$/, '')}/chat/completions`;
+  const { config = {} } = await storage.get('config');
+  const route = chooseAiRoute(options.forceRoute ? { ...config, aiProviderMode: options.forceRoute } : config);
+  if (route.route === 'rules') throw aiError('AI_CONFIG', route.reason || '未配置 AI 服务');
+  const selected = route.route === 'local' ? (config.localModel || {}) : (config.model || {});
+  const fallbackBase = route.route === 'local' ? 'http://127.0.0.1:11434/v1' : 'https://api.deepseek.com';
+  const fallbackModel = route.route === 'local' ? 'qwen3:1.7b' : 'deepseek-v4-flash';
+  const url = `${String(selected.baseUrl || fallbackBase).replace(/\/$/, '')}/chat/completions`;
   const payload = {
-    model: model.model || 'deepseek-v4-pro',
+    model: selected.model || fallbackModel,
     messages,
-    temperature: Number(options.temperature ?? model.temperature ?? 0.1),
+    temperature: Number(options.temperature ?? selected.temperature ?? 0.2),
     max_tokens: Number(options.maxTokens ?? 2800)
   };
   if (jsonMode) payload.response_format = { type: 'json_object' };
 
-  let response = await requestModel(url, payload, model.apiKey, Number(options.timeoutMs || 90000));
+  let response = await requestModel(url, payload, selected.apiKey || '', Number(options.timeoutMs || (route.route === 'local' ? 120000 : 90000)));
   let bodyText = await response.text();
-
-  // 某些兼容网关不支持 response_format，但仍能正常返回 JSON 文本。
   if (!response.ok && jsonMode && [400, 404, 422].includes(response.status) && /response[_ -]?format|json_object|unsupported/i.test(bodyText)) {
     const retryPayload = { ...payload };
     delete retryPayload.response_format;
-    response = await requestModel(url, retryPayload, model.apiKey, Number(options.timeoutMs || 90000));
+    response = await requestModel(url, retryPayload, selected.apiKey || '', Number(options.timeoutMs || (route.route === 'local' ? 120000 : 90000)));
     bodyText = await response.text();
   }
-
-  if (!response.ok) {
-    throw aiError('AI_HTTP', `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}`, { status: response.status });
-  }
+  if (!response.ok) throw aiError('AI_HTTP', `AI 请求失败 HTTP ${response.status}: ${bodyText.substring(0, 500)}`, { status: response.status, route: route.route });
 
   let result;
-  try {
-    result = JSON.parse(bodyText);
-  } catch {
-    throw aiError('AI_INVALID_RESPONSE', 'AI 接口返回了无法识别的响应');
-  }
+  try { result = JSON.parse(bodyText); }
+  catch { throw aiError('AI_INVALID_RESPONSE', 'AI 接口返回了无法识别的响应', { route: route.route }); }
   const choice = result.choices?.[0];
   const content = String(choice?.message?.content || '').trim();
-  if (!content) throw aiError('AI_EMPTY', 'AI 返回为空');
-  if (choice.finish_reason === 'length') {
-    throw aiError('AI_TRUNCATED', 'AI 输出被截断', { finishReason: choice.finish_reason, partial: content });
-  }
+  if (!content) throw aiError('AI_EMPTY', 'AI 返回为空', { route: route.route });
+  if (choice.finish_reason === 'length') throw aiError('AI_TRUNCATED', 'AI 输出被截断', { finishReason: choice.finish_reason, partial: content, route: route.route });
   if (!jsonMode) return content;
   try {
-    return extractJson(content);
+    const parsed = extractJson(content);
+    Object.defineProperty(parsed, '__aiRoute', { value: route.route, enumerable: false });
+    return parsed;
   } catch (error) {
-    throw aiError('AI_INVALID_JSON', `AI 返回 JSON 不完整：${error?.message || '解析失败'}`, { partial: content });
+    throw aiError('AI_INVALID_JSON', `AI 返回 JSON 不完整：${error?.message || '解析失败'}`, { partial: content, route: route.route });
   }
 }
 
@@ -3206,28 +3568,37 @@ async function analyzeJob(job) {
   const strategy = normalizeStrategy(config?.batchStrategy);
   const massMode = strategy === 'full-mass' || strategy === 'safe-mass';
   const greetingStyle = ['human-project', 'natural-project', 'concise', 'skill-first'].includes(config?.greetingStyle) ? config.greetingStyle : 'human-project';
-  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile, strategy, resumeText);
+  const analysisPreference = String(config?.massApplyAnalysis || 'auto-ai');
+  if (analysisPreference === 'rules') return fastMassAnalysis(job, profile, strategy, resumeText);
   const strategyInstruction = strategy === 'full-mass'
     ? '当前为完全海投模式。不得因为技能、年限、专业、学历、行业经验或匹配分不足拒绝岗位，decision原则上为recommend。只识别企业诈骗、收费、账号或岗位明显异常等安全风险，硬性要求仅记录到gaps用于排序。'
     : '当前为安全海投模式。技能、技术栈、专业、学历偏差、经验年限不足和行业经历缺失通常只放入gaps；只有JD明确写出必须、仅限、不接受且与用户真实条件存在不可改变冲突时，才写入hardBlocks并允许reject。';
-  const result = await callModel([
-    {
-      role: 'system',
-      content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting要写成完整、专业但不生硬的求职自我介绍，默认170到280个中文字符，4到5句。优先按这个顺序组织：1 姓名、学校、专业和学历；2 真实到岗时间与可稳定实习时长；3 4到6项真实技术；4 2到4个真实项目；5 过去项目中本人实际负责的页面、接口、检索、表单状态、结果展示等模块；6 表达希望进一步沟通和参与真实业务。只能写简历里明确存在的事实，缺少哪项就省略，绝不能补造。不要把招聘者姓名、活跃状态、薪资、学历标签混进岗位名，也不能把“某某实习生、工程师”写成做过的项目。禁止使用“想问下某某本月活跃还在招吗”这类错误句式。可以使用“希望有机会加入贵公司，在真实业务中继续提升工程能力”这类正式表达。招呼语风格=${greetingStyle}。`
-    },
-    {
-      role: 'user',
-      content: `职业画像：${JSON.stringify(profile)}\n简历：${String(resumeText || '').slice(0, 15000)}\n岗位：${JSON.stringify(job)}`
-    }
-  ]);
-  result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
-  result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle, resumeText);
-  result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
-  result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
-  if (strategy === 'full-mass') result.decision = 'recommend';
-  else if (result.strictHardBlocks.length) result.decision = 'reject';
-  else if (result.decision === 'reject') result.decision = 'cautious';
-  return result;
+  try {
+    const result = await callModel([
+      {
+        role: 'system',
+        content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting要写成完整、专业但不生硬的求职自我介绍，默认170到280个中文字符，4到5句。优先按这个顺序组织：1 姓名、学校、专业和学历；2 真实到岗时间与可稳定实习时长；3 4到6项真实技术；4 2到4个真实项目；5 过去项目中本人实际负责的页面、接口、检索、表单状态、结果展示等模块；6 表达希望进一步沟通和参与真实业务。只能写简历里明确存在的事实，缺少哪项就省略，绝不能补造。不要把招聘者姓名、活跃状态、薪资、学历标签混进岗位名，也不能把“某某实习生、工程师”写成做过的项目。禁止使用“想问下某某本月活跃还在招吗”这类错误句式。可以使用“希望有机会加入贵公司，在真实业务中继续提升工程能力”这类正式表达。招呼语风格=${greetingStyle}。`
+      },
+      {
+        role: 'user',
+        content: `职业画像：${JSON.stringify(profile)}\n简历：${String(resumeText || '').slice(0, 15000)}\n岗位：${JSON.stringify(job)}`
+      }
+    ], true, { forceRoute: analysisPreference === 'cloud' ? 'cloud' : (analysisPreference === 'local' ? 'local' : undefined) });
+    result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
+    result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle, resumeText);
+    result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
+    result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
+    if (strategy === 'full-mass') result.decision = 'recommend';
+    else if (result.strictHardBlocks.length) result.decision = 'reject';
+    else if (result.decision === 'reject') result.decision = 'cautious';
+    return result;
+  } catch (error) {
+    if (String(error?.code || '') === 'AI_ABORTED') throw error;
+    const fallback = fastMassAnalysis(job, profile, strategy, resumeText);
+    fallback.analysisMode = 'local-semantic-fallback';
+    fallback.aiWarning = String(error?.message || 'AI服务不可用，已使用本地轻量算法');
+    return fallback;
+  }
 }
 
 function createTasks(profile, config, directionPlan) {
@@ -3564,9 +3935,17 @@ chrome.alarms.onAlarm.addListener(async alarm => {
     await checkForUpdates(false).catch(() => {});
     return;
   }
+  if (alarm.name === AUTO_RECOVERY_ALARM) {
+    await attemptAutoRecovery().catch(() => {});
+    return;
+  }
   if (alarm.name !== 'jobclaw-tick') return;
-  const { workflow } = await storage.get('workflow');
-  if (workflow?.running && !workflow.paused) sendToBoss({ type: 'RUN' }).catch(() => {});
+  const { workflow, safetyState } = await storage.get(['workflow', 'safetyState']);
+  if (safetyState?.autoRecovering && Number(safetyState.nextRecoveryAt || 0) <= Date.now()) {
+    attemptAutoRecovery().catch(() => {});
+  } else if (workflow?.running && !workflow.paused) {
+    sendToBoss({ type: 'RUN' }).catch(() => {});
+  }
   handleBridgeCommands();
   syncBridgeSnapshot(false).catch(() => {});
 });
@@ -3609,7 +3988,14 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         break;
       }
       case 'SAFETY_OUTCOME': {
-        const state = await applySafetyOutcome({ ok: message.ok !== false, reason: message.reason || '' });
+        const state = await applySafetyOutcome({
+          ok: message.ok !== false,
+          reason: message.reason || '',
+          failureClass: message.failureClass || '',
+          stage: message.stage || '',
+          sendUncertain: Boolean(message.sendUncertain),
+          draftPresent: Boolean(message.draftPresent)
+        });
         reply({ ok: true, state });
         break;
       }
@@ -3627,7 +4013,18 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         reply({ ok: true, result: await probeAndRepairBossPage({ resume: false }) });
         break;
       }
+      case 'AUTO_RECOVER_NOW': {
+        reply({ ok: true, ...(await attemptAutoRecovery({ manual: true })) });
+        break;
+      }
       case 'RESET_AND_RESUME': {
+        await clearSafetyCircuit();
+        const result = await probeAndRepairBossPage({ resume: true });
+        reply({ ok: true, ...result });
+        break;
+      }
+      case 'CONTINUE_AFTER_INCIDENT': {
+        await clearSafetyCircuit();
         const result = await probeAndRepairBossPage({ resume: true });
         reply({ ok: true, ...result });
         break;
@@ -3681,17 +4078,22 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         };
         incoming.executionMode = incoming.executionMode === 'auto' ? 'auto' : 'review';
         incoming.batchStrategy = normalizeStrategy(incoming.batchStrategy || config?.batchStrategy || 'safe-mass');
-        incoming.massApplyAnalysis = ['fast', 'ai'].includes(incoming.massApplyAnalysis) ? incoming.massApplyAnalysis : (config?.massApplyAnalysis || 'fast');
+        incoming.massApplyAnalysis = ['auto-ai', 'cloud', 'local', 'rules'].includes(incoming.massApplyAnalysis) ? incoming.massApplyAnalysis : (config?.massApplyAnalysis || 'auto-ai');
+        incoming.aiProviderMode = normalizeAiProviderMode(incoming.aiProviderMode || config?.aiProviderMode || 'auto');
+        incoming.warnWithoutAi = incoming.warnWithoutAi !== false;
         incoming.pacingPreset = ['conservative', 'standard', 'efficient', 'custom'].includes(incoming.pacingPreset) ? incoming.pacingPreset : (config?.pacingPreset || 'standard');
         incoming.dryRun = Boolean(incoming.dryRun);
-        incoming.dailyTarget = Math.max(1, Math.min(150, Number(incoming.dailyTarget || config?.dailyTarget || 30)));
+        incoming.dailyTarget = Math.max(1, Math.min(150, Number(incoming.dailyTarget || config?.dailyTarget || 150)));
         incoming.discoveryLimit = Math.max(1, Math.min(800, Number(incoming.discoveryLimit || config?.discoveryLimit || 150)));
         const presetDelay = { conservative: 15, standard: 9, efficient: 6 }[incoming.pacingPreset];
         incoming.betweenJobsSeconds = Math.max(6, Math.min(120, Number(presetDelay || incoming.betweenJobsSeconds || config?.betweenJobsSeconds || 9)));
         incoming.attachmentDelaySeconds = Math.max(1.5, Math.min(15, Number(incoming.attachmentDelaySeconds || config?.attachmentDelaySeconds || 3)));
         incoming.maxPerCompanyPerDay = Math.max(1, Math.min(12, Number(incoming.maxPerCompanyPerDay || config?.maxPerCompanyPerDay || 3)));
         incoming.queueWarmup = Math.max(1, Math.min(10, Number(incoming.queueWarmup || config?.queueWarmup || 4)));
-        incoming.maxConsecutiveFailures = Math.max(1, Math.min(10, Number(incoming.maxConsecutiveFailures || config?.maxConsecutiveFailures || 3)));
+        incoming.maxConsecutiveFailures = Math.max(1, Math.min(10, Number(incoming.maxConsecutiveFailures || config?.maxConsecutiveFailures || 6)));
+        incoming.autoRecoveryEnabled = incoming.autoRecoveryEnabled !== false;
+        incoming.autoRecoveryMaxAttempts = Math.max(1, Math.min(6, Number(incoming.autoRecoveryMaxAttempts || config?.autoRecoveryMaxAttempts || 3)));
+        incoming.autoRecoveryCooldownSeconds = Math.max(20, Math.min(1800, Number(incoming.autoRecoveryCooldownSeconds || config?.autoRecoveryCooldownSeconds || 45)));
         incoming.jitterSeconds = Math.max(0, Math.min(15, Number(incoming.jitterSeconds ?? config?.jitterSeconds ?? 3)));
         incoming.companyVerificationEnabled = incoming.companyVerificationEnabled !== false;
         incoming.companyVerificationProvider = String(incoming.companyVerificationProvider || config?.companyVerificationProvider || 'bridge');
@@ -3716,7 +4118,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         incoming.dailyReportNotification = incoming.dailyReportNotification !== false;
         incoming.rateLimits = { ...DEFAULTS.config.rateLimits, ...(config?.rateLimits || {}), ...(incoming.rateLimits || {}), deliveryMs: Math.max(6000, Number(incoming.betweenJobsSeconds || 9) * 1000), attachmentMs: Math.max(1500, Number(incoming.attachmentDelaySeconds || 3) * 1000) };
         incoming.model.baseUrl = String(incoming.model.baseUrl || 'https://api.deepseek.com').trim();
-        incoming.model.model = String(incoming.model.model || 'deepseek-v4-pro').trim();
+        incoming.model.model = String(incoming.model.model || 'deepseek-v4-flash').trim();
+        const oldLocalKey = config?.localModel?.apiKey || '';
+        incoming.localModel = {
+          ...(config?.localModel || DEFAULTS.config.localModel),
+          ...(incoming.localModel || {}),
+          enabled: Boolean(incoming.localModel?.enabled),
+          baseUrl: String(incoming.localModel?.baseUrl || 'http://127.0.0.1:11434/v1').trim(),
+          model: String(incoming.localModel?.model || 'qwen3:1.7b').trim(),
+          apiKey: incoming.localModel?.apiKey && incoming.localModel.apiKey !== '***' ? incoming.localModel.apiKey : oldLocalKey,
+          temperature: Math.max(0, Math.min(1.5, Number(incoming.localModel?.temperature ?? config?.localModel?.temperature ?? 0.2)))
+        };
         await storage.set({ config: { ...(config || {}), ...incoming } });
         await writeEvent('info', '设置已保存');
         syncBridgeSnapshot(true).catch(() => {});
@@ -3911,11 +4323,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         break;
       }
       case 'TEST_AI': {
+        const { config = {} } = await storage.get('config');
+        const status = publicAiStatus(config);
+        if (status.route === 'rules') {
+          reply({ ok: true, text: '未连接模型，本地轻量算法可用', status });
+          break;
+        }
         const text = await callModel([
           { role: 'system', content: '只回复“连接正常”。' },
           { role: 'user', content: '测试连接' }
         ], false);
-        reply({ ok: true, text });
+        reply({ ok: true, text, status });
         break;
       }
       case 'OPEN_BOSS_JOBS': {
@@ -4055,33 +4473,62 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           reply({ ok: true, startup: completed.startup });
         } catch (error) {
           const messageText = bossConnectionError(error);
+          const safety = await applySafetyOutcome({
+            ok: false,
+            reason: messageText,
+            failureClass: 'startup',
+            stage: 'startup'
+          });
+          const autoRecovering = Boolean(safety.autoRecovering && !safety.circuitOpen);
           const failed = await patchStartup({
-            state: 'failed',
-            step: 'failed',
-            message: '启动失败',
+            state: autoRecovering ? 'recovering' : 'failed',
+            step: autoRecovering ? 'auto_recovery' : 'failed',
+            message: autoRecovering ? '启动异常，正在自动修复' : '启动失败',
             completedAt: Date.now(),
             error: messageText
-          }, {
+          }, autoRecovering ? {
+            running: true,
+            paused: true,
+            phase: 'auto_recovery',
+            statusText: safety.currentIncident?.suggestion || '启动异常，正在自动修复'
+          } : {
             running: false,
             paused: true,
             phase: 'idle',
             statusText: messageText
           });
-          await writeEvent('warning', '任务启动失败', { error: messageText, requestId }).catch(() => {});
-          reply({ ok: false, error: messageText, startup: failed.startup });
+          await writeEvent('warning', autoRecovering ? '任务启动异常，已进入自动修复' : '任务启动失败', { error: messageText, requestId, autoRecovering }).catch(() => {});
+          reply({ ok: false, error: messageText, autoRecovering, incident: safety.currentIncident || null, startup: failed.startup });
         }
         break;
       }
-      case 'PAUSE':
-        await patchWorkflow({ paused: true, statusText: '用户已暂停' });
-        await writeEvent('info', '任务已暂停');
-        reply({ ok: true });
+      case 'PAUSE': {
+        const { workflow = {} } = await storage.get('workflow');
+        const revision = Number(workflow.controlRevision || 0) + 1;
+        abortActiveAiRequests('user-pause');
+        await patchWorkflow({ paused: true, phase: 'pausing', pauseRequestedAt: Date.now(), controlRevision: revision, statusText: '正在立即暂停…' });
+        await broadcastBossControl('PAUSE_NOW', { revision });
+        await patchWorkflow({ paused: true, phase: 'paused', statusText: '用户已暂停' });
+        await writeEvent('info', '任务已立即暂停', { revision });
+        reply({ ok: true, revision });
         break;
-      case 'STOP':
+      }
+      case 'STOP': {
+        const { workflow = {} } = await storage.get('workflow');
+        const revision = Number(workflow.controlRevision || 0) + 1;
+        abortActiveAiRequests('user-stop');
+        await patchWorkflow({ running: false, paused: true, phase: 'stopping', stopRequestedAt: Date.now(), controlRevision: revision, statusText: '正在立即停止…', pendingApplyId: null, activeRunId: null });
+        await broadcastBossControl('STOP_NOW', { revision });
         await patchWorkflow({ running: false, paused: true, phase: 'idle', statusText: '用户已停止', pendingApplyId: null, activeRunId: null });
-        await writeEvent('info', '任务已停止');
-        reply({ ok: true });
+        await writeEvent('info', '任务已立即停止', { revision });
+        reply({ ok: true, revision });
         break;
+      }
+      case 'AI_STATUS': {
+        const { config = {} } = await storage.get('config');
+        reply({ ok: true, status: publicAiStatus(config) });
+        break;
+      }
       case 'AI_JOB':
         reply({ ok: true, result: await analyzeJob(message.job) });
         break;
@@ -4276,7 +4723,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           : null;
         const nextHistory = historyEntry ? [historyEntry, ...deliveryHistory].slice(0, 2000) : deliveryHistory;
         await storage.set({ pending: next, stats: updatedStats, chatDeliveryLedger: nextLedger, chatTransition: nextTransition, deliveryHistory: nextHistory });
-        const safetyAfter = await applySafetyOutcome({ ok: Boolean(message.ok), reason: message.error || (message.ok ? '' : '投递失败') });
+        const safetyAfter = await applySafetyOutcome({
+          ok: Boolean(message.ok),
+          reason: message.error || (message.ok ? '' : '投递失败'),
+          failureClass: message.failureClass || '',
+          stage: message.stage || '',
+          sendUncertain: message.failureClass === 'send_uncertain',
+          draftPresent: Boolean(message.draftPresent || message.preserveDraft),
+          pendingId: message.id,
+          runId: completedItem?.runId || '',
+          job: completedItem?.job || null
+        });
         const completedRun = await updateTaskRunByPending(message.id, message.ok
           ? {
               status: 'success', stage: 'success', progress: 100, stageLabel: '投递成功', error: '',
@@ -4295,7 +4752,22 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           error: message.error || ''
         });
         if (safetyAfter.circuitOpen) {
-          reply({ ok: true, circuitOpen: true, reason: safetyAfter.circuitReason });
+          reply({
+            ok: true,
+            circuitOpen: true,
+            reason: safetyAfter.circuitReason,
+            incident: safetyAfter.currentIncident || null,
+            suggestion: safetyAfter.lastSuggestion || ''
+          });
+          break;
+        }
+        if (!message.ok && safetyAfter.autoRecovering) {
+          reply({
+            ok: true,
+            autoRecovering: true,
+            incident: safetyAfter.currentIncident || null,
+            nextRecoveryAt: safetyAfter.nextRecoveryAt || 0
+          });
           break;
         }
 
@@ -4324,7 +4796,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           break;
         }
 
-        if (updatedStats.sent >= Number(config.dailyTarget || 30)) {
+        if (updatedStats.sent >= Number(config.dailyTarget || 150)) {
           await patchWorkflow({ running: false, paused: true, pendingApplyId: null, activeRunId: null, phase: 'idle', statusText: `已完成今日 ${updatedStats.sent} 次成功投递` });
           reply({ ok: true, targetReached: true });
           break;
@@ -4332,7 +4804,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 
         // 任何文字未确认场景都暂停当前队列，但只有输入框中确实存在完整招呼语时，
         // 才提示“草稿已保留”。输入框为空时必须明确提示写入失败，不能误导用户。
-        if (!message.ok && message.pauseQueue) {
+        if (!message.ok && message.pauseQueue && safetyAfter.currentIncident?.requiresUser) {
           const draftPresent = message.preserveDraft === true || message.draftPresent === true;
           await patchWorkflow({
             running: false,

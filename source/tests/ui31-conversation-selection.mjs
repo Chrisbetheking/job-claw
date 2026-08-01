@@ -5,7 +5,7 @@ const content = await readFile('dist/chrome-extension/content-v37.js', 'utf8');
 const background = await readFile('dist/chrome-extension/background.js', 'utf8');
 const manifest = JSON.parse(await readFile('dist/chrome-extension/manifest.json', 'utf8'));
 
-if (manifest.version !== '2.0.1') throw new Error('UI37 manifest version mismatch');
+if (manifest.version !== '2.2.0') throw new Error('UI37 manifest version mismatch');
 for (const token of [
   'conversationTokenDetails',
   'conversationTokenRelation',

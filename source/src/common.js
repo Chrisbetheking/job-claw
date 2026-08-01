@@ -2,11 +2,13 @@ export const DEFAULTS = {
   config: {
     executionMode: 'review',
     batchStrategy: 'safe-mass',
-    massApplyAnalysis: 'fast',
+    massApplyAnalysis: 'auto-ai',
+    aiProviderMode: 'auto',
+    warnWithoutAi: true,
     greetingStyle: 'human-project',
     pacingPreset: 'standard',
     dryRun: false,
-    dailyTarget: 30,
+    dailyTarget: 150,
     discoveryLimit: 150,
     aiLimit: 0,
     minScore: 75,
@@ -29,7 +31,10 @@ export const DEFAULTS = {
     attachmentDelaySeconds: 3,
     maxPerCompanyPerDay: 3,
     queueWarmup: 4,
-    maxConsecutiveFailures: 3,
+    maxConsecutiveFailures: 6,
+    autoRecoveryEnabled: true,
+    autoRecoveryMaxAttempts: 3,
+    autoRecoveryCooldownSeconds: 45,
     jitterSeconds: 3,
     companyVerificationEnabled: true,
     companyVerificationProvider: 'bridge',
@@ -52,8 +57,15 @@ export const DEFAULTS = {
     model: {
       baseUrl: 'https://api.deepseek.com',
       apiKey: '',
-      model: 'deepseek-v4-pro',
-      temperature: 0.1
+      model: 'deepseek-v4-flash',
+      temperature: 0.2
+    },
+    localModel: {
+      enabled: false,
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      apiKey: '',
+      model: 'qwen3:1.7b',
+      temperature: 0.2
     }
   },
   profile: null,
@@ -77,7 +89,10 @@ export const DEFAULTS = {
     simulated: 0,
     lowQuality: 0,
     stagnantTasks: 0,
-    filterFailures: 0
+    filterFailures: 0,
+    autoRecovered: 0,
+    autoSkipped: 0,
+    userInterventions: 0
   },
   workflow: {
     running: false,
@@ -110,7 +125,10 @@ export const DEFAULTS = {
       pageType: '',
       transport: ''
     },
-    actualSearchContext: null
+    actualSearchContext: null,
+    controlRevision: 0,
+    pauseRequestedAt: 0,
+    stopRequestedAt: 0
   },
   pending: [],
   taskRuns: [],
@@ -123,13 +141,24 @@ export const DEFAULTS = {
     circuitOpenedAt: 0,
     totalThrottled: 0,
     backoffLevel: 0,
-    lastBackoffReason: ''
+    lastBackoffReason: '',
+    currentIncident: null,
+    lastSuggestion: '',
+    autoRecovering: false,
+    recoveryPlan: null,
+    nextRecoveryAt: 0,
+    recoveryAttempts: 0,
+    lastRecoveryResult: '',
+    totalAutoRecovered: 0,
+    totalAutoSkipped: 0,
+    totalUserInterventions: 0,
+    incidentHistory: []
   },
   companyVerificationCache: {},
   deliveryHistory: [],
   jobSeenHistory: [],
   updateInfo: {
-    currentVersion: '2.0.1',
+    currentVersion: '2.2.0',
     latestVersion: '',
     available: false,
     checkedAt: 0,

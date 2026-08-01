@@ -8,7 +8,7 @@ const html = await readFile('public/sidepanel.html', 'utf8');
 const quality = await readFile('src/lib/job-quality.js', 'utf8');
 const filters = await readFile('src/lib/search-filters.js', 'utf8');
 
-if (manifest.version !== '2.0.1') throw new Error('v2.0.1 manifest missing');
+if (manifest.version !== '2.2.0') throw new Error('v2.2.0 manifest missing');
 for (const id of ['locations', 'expandNationwideToCities', 'cityRotationCities', 'types', 'salary', 'experience', 'degree', 'maxJobsPerTask', 'stagnationLimit', 'dedupeWindowDays', 'lowQualityPolicy', 'clearJobHistory', 'jobHistoryCount']) {
   if (!html.includes(`id="${id}"`)) throw new Error(`v2.0 UI missing ${id}`);
 }

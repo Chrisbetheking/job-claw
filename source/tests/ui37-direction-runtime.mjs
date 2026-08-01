@@ -23,7 +23,7 @@ const data = {
     executionMode: 'review', dailyTarget: 150, minScore: 75,
     targetLocations: ['成都'], employmentTypes: ['实习'], experiences: ['在校/应届'], degrees: ['本科'], salary: '不限',
     discoveryLimit: 0, sendResumeImage: false, sendOnlineResume: false, betweenJobsSeconds: 12, attachmentDelaySeconds: 4,
-    model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-pro', temperature: 0.1 }
+    model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-flash', temperature: 0.1 }
   },
   workflow: { running: false, paused: true, phase: 'idle', tasks: [], taskIndex: 0, cardIndex: 0, processedKeys: [], retries: 0, currentJob: null, pendingApplyId: null, activeRunId: null },
   pending: [], taskRuns: [], events: [],
@@ -65,7 +65,7 @@ globalThis.chrome = {
     query: async () => [{ id: 1, active: true, status: 'complete', url: 'https://www.zhipin.com/web/geek/job', title: 'BOSS' }],
     get: async () => ({ id: 1, active: true, status: 'complete', url: 'https://www.zhipin.com/web/geek/job', title: 'BOSS' }),
     sendMessage: async (_id, message) => message.type === 'PROBE'
-      ? { ok: true, contentVersion: '2.0.1', contentBuild: '2.0.1-greeting-hotfix.1', contentFile: 'content-v37.js', pageType: 'jobs' }
+      ? { ok: true, contentVersion: '2.2.0', contentBuild: '2.2.0-auto-recovery.1', contentFile: 'content-v37.js', pageType: 'jobs' }
       : { ok: true },
     reload: async () => {},
     onUpdated: { addListener: () => {}, removeListener: () => {} }

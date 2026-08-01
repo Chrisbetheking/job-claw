@@ -67,6 +67,24 @@
           </div>
         </article>
 
+        <article class="module-card home-recovery-card" id="homeRecoveryCard" hidden>
+          <div class="home-recovery-copy">
+            <span class="eyebrow" id="homeRecoveryEyebrow">自动恢复</span>
+            <b id="homeRecoveryTitle">正在处理异常</b>
+            <small id="homeRecoveryText">系统会自动修复并从断点继续</small>
+          </div>
+          <div class="button-row home-recovery-actions">
+            <button class="button button-primary small" id="homeAutoRecover" type="button">立即自动修复</button>
+            <button class="button button-secondary small" id="homeContinueIncident" type="button">已处理并继续</button>
+          </div>
+        </article>
+
+        <article class="module-card daily-goal-card">
+          <div class="module-title compact-title"><div><b>今日投递目标</b><small id="dailyGoalText">0 / 150 已完成</small></div><span class="pill" id="dailyGoalPill">剩余 150</span></div>
+          <div class="progress-track daily-goal-track" role="progressbar" aria-label="今日投递目标" aria-valuemin="0" aria-valuemax="150" aria-valuenow="0" id="dailyGoalProgress"><i id="dailyGoalBar"></i></div>
+          <div class="daily-goal-metrics"><span id="dailyGoalRecovery">自动修复 0</span><span id="dailyGoalSkipped">自动跳过 0</span><span id="dailyGoalManual">需人工 0</span></div>
+        </article>
+
         <section class="stats-grid" aria-label="今日任务数据">
           <article><span>已采集</span><strong id="statDiscovered">0</strong><small>发现岗位</small></article>
           <article><span>AI 分析</span><strong id="statAnalyzed">0</strong><small>完成匹配</small></article>
@@ -318,7 +336,7 @@
             <select id="batchStrategy" class="visually-hidden-control" tabindex="-1" aria-hidden="true"><option value="full-mass">完全海投</option><option value="safe-mass">安全海投</option></select>
           </div>
           <div class="field-grid two compact-settings">
-            <label class="field"><span>海投分析方式</span><select id="massApplyAnalysis"><option value="fast">快速模式 不逐岗调用AI</option><option value="ai">AI个性化分析</option></select><small>快速模式使用简历事实生成基础招呼语 AI模式更个性化但速度和成本更高</small></label>
+            <label class="field"><span>海投分析方式</span><select id="massApplyAnalysis"><option value="auto-ai">智能自动 默认</option><option value="cloud">仅 DeepSeek V4 Flash</option><option value="local">仅本地轻量模型</option><option value="rules">本地轻量算法</option></select><small>默认优先 DeepSeek V4 Flash 未配置时尝试本地模型 最后回退本地轻量算法</small></label>
             <label class="field"><span>招呼语风格</span><select id="greetingStyle"><option value="human-project">完整求职介绍 默认</option><option value="concise">简短直接</option><option value="skill-first">技术切入</option></select><small>默认包含姓名 学校 到岗时间 技术 项目和负责模块 只使用简历真实事实</small></label>
             <label class="switch-line compact-switch"><input id="dryRun" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>模拟运行</b><small>完成采集 核验 分析和队列预览 绝不发送消息</small></span></label>
           </div>
@@ -380,12 +398,36 @@
         <details class="module-card collapsible" data-collapsible="safety-settings">
           <summary><span><b>安全调度与企业核验</b><small>统一限速 熔断 去重和第三方企业查询 Provider</small></span><i class="chevron"></i></summary>
           <div class="module-body form-grid">
-            <div class="field-grid two numeric-grid">
+            <div class="switch-group">
+              <label class="switch-line"><input id="autoRecoveryEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>异常自动诊断与恢复</b><small>普通超时 页面加载慢 筛选失败和单岗位异常会自动修复或跳过 不影响后续队列</small></span></label>
+            </div>
+            <div class="field-grid three numeric-grid">
               <label class="field"><span>随机等待抖动 秒</span><input id="jitterSeconds" type="number" min="0" max="15" step="1"><small>在最低等待时间上增加随机延迟</small></label>
-              <label class="field"><span>连续失败熔断次数</span><input id="maxConsecutiveFailures" type="number" min="1" max="10" step="1"><small>验证码 403 429等异常会立即熔断</small></label>
+              <label class="field"><span>连续异常观察阈值</span><input id="maxConsecutiveFailures" type="number" min="1" max="10" step="1"><small>普通异常达到阈值后自动刷新页面 不直接要求人工重置</small></label>
+              <label class="field"><span>自动修复最大次数</span><input id="autoRecoveryMaxAttempts" type="number" min="1" max="6" step="1"><small>多次自动修复仍失败才提示用户处理</small></label>
+            </div>
+            <div class="field-grid two numeric-grid">
+              <label class="field"><span>自动恢复基础等待 秒</span><input id="autoRecoveryCooldownSeconds" type="number" min="20" max="1800" step="5"><small>网络异常会指数退避 频率限制会使用更长冷却</small></label>
+              <label class="field"><span>企业信息缓存 天</span><input id="companyVerificationCacheDays" type="number" min="1" max="90" step="1"></label>
             </div>
             <label class="field"><span>企业核验 Provider</span><select id="companyVerificationProvider"><option value="bridge">OpenClaw MCP桥接</option><option value="local">仅本地风险规则</option></select><small>正式企业查询API密钥保存在本地桥接中 不写入扩展</small></label>
-            <div class="field-grid two numeric-grid"><label class="field"><span>企业信息缓存 天</span><input id="companyVerificationCacheDays" type="number" min="1" max="90" step="1"></label><div class="safety-state-card"><b id="safetyStateTitle">安全调度正常</b><small id="safetyStateText">未触发熔断</small><small id="jobHistoryCount">岗位去重记忆 0 条</small><div class="button-row safety-actions"><button class="button button-secondary small" id="probeAndRepair" type="button">检测页面</button><button class="button button-primary small" id="resetAndResume" type="button">重置并继续</button><button class="button button-secondary small" id="resetSafety" type="button">仅重置</button><button class="button button-ghost small" id="clearJobHistory" type="button">清除岗位记忆</button></div></div></div>
+            <div class="safety-state-card enhanced-safety-card">
+              <b id="safetyStateTitle">安全调度正常</b>
+              <small id="safetyStateText">普通异常将自动处理</small>
+              <div class="incident-advice" id="incidentAdvice" hidden>
+                <small class="incident-suggestion" id="safetySuggestion">系统会给出处理建议</small>
+              </div>
+              <small id="recoveryMetrics">自适应降速 0 级 · 已限速 0 次 · 需人工 0 次</small>
+              <small id="jobHistoryCount">岗位去重记忆 0 条</small>
+              <div class="button-row safety-actions">
+                <button class="button button-secondary small" id="probeAndRepair" type="button">检测页面</button>
+                <button class="button button-primary small" id="autoRecoverNow" type="button">立即自动修复</button>
+                <button class="button button-primary small" id="continueIncident" type="button">已处理并继续</button>
+                <button class="button button-secondary small" id="resetAndResume" type="button">重置并继续</button>
+                <button class="button button-secondary small" id="resetSafety" type="button">仅重置</button>
+                <button class="button button-ghost small" id="clearJobHistory" type="button">清除岗位记忆</button>
+              </div>
+            </div>
             <div class="switch-group">
               <label class="switch-line"><input id="companyVerificationEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>启用企业风险核验</b><small>工商Provider不可用时自动降级为本地岗位风险规则</small></span></label>
               <label class="switch-line"><input id="blockUnknownCompanies" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>阻止无法确认的企业</b><small>开启后未知企业不会进入投递队列</small></span></label>
@@ -396,20 +438,29 @@
 
         <details class="module-card collapsible" data-collapsible="ai-settings">
           <summary>
-            <span><b>AI 模型连接</b><small>默认使用 DeepSeek V4 Pro，也可切换 V4 Flash / 兼容接口</small></span>
+            <span><b>AI 模型连接</b><small>推荐 DeepSeek V4 Flash 也支持本地 Qwen3 和兼容接口</small></span>
             <i class="chevron"></i>
           </summary>
           <div class="module-body form-grid">
+            <label class="field"><span>AI 路由</span><select id="aiProviderMode"><option value="auto">自动选择 推荐</option><option value="cloud">仅云端 DeepSeek</option><option value="local">仅本地模型</option><option value="rules">仅本地轻量算法</option></select><small>自动模式优先云端 API 其次本地模型 最后使用无需下载的本地轻量算法</small></label>
+            <label class="switch-line compact-switch"><input id="warnWithoutAi" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>未配置 AI 时启动提醒</b><small>允许继续 但会提示招呼语质量可能下降</small></span></label>
+            <div class="subsection-title"><b>DeepSeek 云端</b><small>默认推荐 V4 Flash</small></div>
             <label class="field"><span>Base URL</span><input id="baseUrl" type="url" placeholder="https://api.deepseek.com"></label>
-            <label class="field"><span>模型名称</span><input id="modelName" type="text" list="deepseekV4Models" placeholder="deepseek-v4-pro"><small>默认 deepseek-v4-pro；追求速度和成本可用 deepseek-v4-flash。</small></label>
-            <datalist id="deepseekV4Models"><option value="deepseek-v4-pro"></option><option value="deepseek-v4-flash"></option></datalist>
+            <label class="field"><span>模型名称</span><input id="modelName" type="text" list="deepseekV4Models" placeholder="deepseek-v4-flash"><small>默认 deepseek-v4-flash 适合逐岗分析与招呼语生成</small></label>
+            <datalist id="deepseekV4Models"><option value="deepseek-v4-flash"></option><option value="deepseek-v4-pro"></option></datalist>
             <label class="field"><span>API Key</span><input id="apiKey" type="password" autocomplete="off" placeholder="保存后显示 ***"></label>
-            <div class="button-row"><button class="button button-secondary" id="testAi">测试 AI 连接</button><span class="inline-result" id="aiTestResult"></span></div>
+            <div class="subsection-title"><b>本地轻量模型 可选</b><small>推荐 Qwen3 1.7B 通过 Ollama 或 llama.cpp 提供 OpenAI 兼容接口</small></div>
+            <label class="switch-line compact-switch"><input id="localModelEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>启用本地模型</b><small>模型权重不会打包进扩展 需要在本机单独运行</small></span></label>
+            <label class="field"><span>本地 Base URL</span><input id="localModelBaseUrl" type="url" placeholder="http://127.0.0.1:11434/v1"></label>
+            <label class="field"><span>本地模型名称</span><input id="localModelName" type="text" list="localModels" placeholder="qwen3:1.7b"><small>超轻量可用 qwen3:0.6b 中文质量更推荐 qwen3:1.7b</small></label>
+            <datalist id="localModels"><option value="qwen3:1.7b"></option><option value="qwen3:0.6b"></option></datalist>
+            <label class="field"><span>本地接口 Key 可选</span><input id="localModelApiKey" type="password" autocomplete="off" placeholder="通常留空"></label>
+            <div class="button-row"><button class="button button-secondary" id="testAi">测试当前 AI 路由</button><span class="inline-result" id="aiTestResult"></span></div>
           </div>
         </details>
 
         <article class="module-card update-card">
-          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 2.0.1</small></div><span class="pill" id="updateVersionPill">2.0.1</span></div>
+          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 2.2.0</small></div><span class="pill" id="updateVersionPill">2.2.0</span></div>
           <div class="button-row"><button class="button button-secondary" id="checkUpdate" type="button">检查更新</button><button class="button button-primary" id="openUpdate" type="button" hidden>查看新版本</button></div>
         </article>
 
@@ -493,6 +544,15 @@
     </nav>
   </div>
 
+
+  <div class="modal-backdrop" id="aiWarningModal" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aiWarningTitle">
+      <span class="eyebrow">AI 配置提醒</span>
+      <h2 id="aiWarningTitle">当前没有可用的 AI 模型</h2>
+      <p>你仍然可以继续使用本地轻量算法 但岗位分析和招呼语质量可能低于 DeepSeek V4 Flash 或本地 Qwen3 模型</p>
+      <div class="modal-actions"><button class="button button-secondary" id="continueWithoutAi">继续使用本地算法</button><button class="button button-primary" id="configureAiNow">去配置 AI</button></div>
+    </section>
+  </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   <script type="module" src="sidepanel.js"></script>
 </body>

@@ -17,7 +17,7 @@ for (const token of ['完整、专业但不生硬的求职自我介绍', '希望
   if (!background.includes(token)) throw new Error(`完整招呼语规则缺失：${token}`);
 }
 
-for (const token of ['cleanJobTitle', 'plausibleJobTitle', 'cleanCompanyName', 'CHAT_EDITOR_TIMEOUT', '2.0.1-greeting-hotfix.1']) {
+for (const token of ['cleanJobTitle', 'plausibleJobTitle', 'cleanCompanyName', 'CHAT_EDITOR_TIMEOUT', '2.2.0-auto-recovery.1']) {
   if (!content.includes(token)) throw new Error(`岗位提取或沟通恢复能力缺失：${token}`);
 }
 for (const token of ['greetingStyle', 'probeAndRepair', 'resetAndResume']) {

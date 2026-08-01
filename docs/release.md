@@ -1,10 +1,17 @@
 # 发布指南
 
-## 准备
+## 版本准备
 
-1. 更新 `source/package.json` 和 `source/public/manifest.json` 版本
-2. 更新 `CHANGELOG.md`
-3. 运行完整测试
+同步更新：
+
+- `source/package.json`
+- `source/package-lock.json`
+- `source/public/manifest.json`
+- `README.md`
+- `CHANGELOG.md`
+- `CITATION.cff`
+
+运行：
 
 ```bash
 cd source
@@ -14,20 +21,34 @@ npm test
 
 ## Pull Request
 
-从 `main` 创建发布分支，通过 Pull Request 合并，不直接把大包上传到 `main`。
-
-## Tag 和 Release
-
-在合并后的 `main` 提交创建标签：
+从 `main` 创建发布分支，例如：
 
 ```text
-v2.0.1
+release/v2.2.0
 ```
 
-推送标签后，`.github/workflows/release.yml` 会：
+通过 Pull Request 合并，不直接上传整包到 `main`。
 
-- 运行完整测试
-- 构建 Chrome 扩展
-- 生成正式 ZIP
-- 生成 SHA-256
-- 创建 GitHub Release
+## Tag
+
+在合并后的 `main` 最新提交创建：
+
+```text
+v2.2.0
+```
+
+标签必须与 Manifest 版本完全一致。
+
+## 自动 Release
+
+`.github/workflows/release.yml` 会：
+
+1. 安装依赖
+2. 运行完整测试
+3. 核对 Tag 和 Manifest
+4. 构建 Chrome 扩展
+5. 打包扩展、OpenClaw、文档和安装脚本
+6. 生成 SHA-256
+7. 创建 GitHub Release
+
+不要在同名标签已经存在时重复创建。失败时修复工作流后重新运行，或删除错误标签再从正确提交创建。

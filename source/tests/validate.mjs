@@ -13,7 +13,7 @@ try { await access(`${root}/content.js`); throw new Error('旧 content.js 不应
 
 const manifest = JSON.parse(await readFile(`${root}/manifest.json`, 'utf8'));
 if (manifest.manifest_version !== 3) throw new Error('Manifest 不是 V3');
-if (manifest.version !== '2.0.1') throw new Error(`Manifest 版本异常：${manifest.version}`);
+if (manifest.version !== '2.2.0') throw new Error(`Manifest 版本异常：${manifest.version}`);
 if (manifest.side_panel?.default_path !== 'sidepanel.html') throw new Error('side_panel 配置错误');
 if (manifest.background?.service_worker !== 'background.js' || manifest.background?.type !== 'module') throw new Error('background module 配置错误');
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js 未注册');
