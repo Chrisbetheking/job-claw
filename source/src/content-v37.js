@@ -1,6 +1,6 @@
 (() => {
-const JOBCLAW_CONTENT_VERSION = '2.0.1';
-const JOBCLAW_CONTENT_BUILD = '2.0.1-greeting-hotfix.1';
+const JOBCLAW_CONTENT_VERSION = '2.1.0';
+const JOBCLAW_CONTENT_BUILD = '2.1.0-ai-pause.2';
 const JOBCLAW_CONTENT_FILE = 'content-v37.js';
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
 const BOSS_CITY_NAMES = Object.freeze(['全国','北京','上海','广州','深圳','杭州','成都','南京','武汉','西安','苏州','重庆','长沙','天津','郑州','厦门','青岛','东莞','佛山','合肥','济南','福州','无锡','宁波','昆明','大连','沈阳','石家庄','南昌','南宁','贵阳','太原','哈尔滨','长春','海口','珠海','惠州','温州','嘉兴']);
@@ -30,7 +30,25 @@ try {
 function runtimeIsActive() {
   return globalThis.__JOBCLAW_CONTENT_RUNTIME__ === contentRuntime && contentRuntime.active === true;
 }
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const runtimeControl = { paused: false, stopped: false, revision: 0 };
+function controlError(reason = '任务已暂停') {
+  const error = new Error(reason);
+  error.code = runtimeControl.stopped ? 'JOBCLAW_STOPPED' : 'JOBCLAW_PAUSED';
+  error.controlSignal = true;
+  return error;
+}
+function assertControlActive() {
+  if (runtimeControl.stopped) throw controlError('任务已停止');
+  if (runtimeControl.paused) throw controlError('任务已暂停');
+  if (!runtimeIsActive()) throw controlError('页面助手已失效');
+}
+const sleep = async ms => {
+  const deadline = Date.now() + Math.max(0, Number(ms || 0));
+  while (Date.now() < deadline) {
+    if (runtimeControl.paused || runtimeControl.stopped || !runtimeIsActive()) throw controlError(runtimeControl.stopped ? '任务已停止' : '任务已暂停');
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
+  }
+};
 const waitForDomMutation = (timeout = 420) => new Promise(resolve => {
   if (typeof MutationObserver !== 'function' || !document?.documentElement) {
     setTimeout(resolve, timeout);
@@ -204,12 +222,14 @@ async function send(type, payload = {}) {
 }
 
 async function waitForRateLimit(scope = 'discovery', label = '操作') {
+  assertControlActive();
   const result = await send('RATE_LIMIT', { scope });
   if (!result?.ok) throw new Error(result?.reason || `${label}已被安全限速器暂停`);
   const waitMs = Math.max(0, Number(result.waitMs || 0));
   if (waitMs > 0) {
     await send('WORKFLOW', { patch: { statusText: `${label}安全等待 ${Math.ceil(waitMs / 1000)} 秒` } });
     await sleep(waitMs);
+    assertControlActive();
   }
   return result;
 }
@@ -217,6 +237,7 @@ async function waitForRateLimit(scope = 'discovery', label = '操作') {
 async function waitFor(check, timeout = 12000, label = '页面条件') {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeout) {
+    assertControlActive();
     try {
       const result = await check();
       if (result) return result;
@@ -2669,6 +2690,7 @@ class BossAdapter {
   }
 
   async sendGreeting(greeting, options = {}) {
+    assertControlActive();
     const safeGreeting = String(greeting || '').trim();
     if (safeGreeting.length < 8) throw new Error('求职招呼语为空或过短，已停止发送附件');
     let input = this.resolveEditableChatInput(this.chatInput() || await this.enterChat());
@@ -2683,6 +2705,7 @@ class BossAdapter {
     const confirmTimeout = Math.max(22000, Math.min(60000, Number(options.confirmTimeoutMs || 42000)));
     const normalizedGreeting = normalize(safeGreeting);
     await sleep(chatReadyDelay);
+    assertControlActive();
 
     const currentInput = () => this.resolveEditableChatInput(this.chatInput() || input) || input;
     const inputContainsGreeting = () => {
@@ -2704,6 +2727,7 @@ class BossAdapter {
     const alreadyInEditor = inputContainsGreeting();
 
     if (alreadyInEditor) {
+      assertControlActive();
       writeResult = { changed: false, preserved: true, diagnostics: this.chatEditorDiagnostics(currentInput()) };
       try {
         await this.trustedEditorAction('pressEnter', currentInput());
@@ -2712,6 +2736,7 @@ class BossAdapter {
         this.pressEnter(currentInput());
       }
     } else {
+      assertControlActive();
       try {
         const trustedWrite = await this.trustedEditorAction('replaceTextAndEnter', input, { text: safeGreeting });
         writeMethod = trustedWrite?.writeMethod || 'clipboard/main-world/cdp-atomic';
@@ -2745,6 +2770,7 @@ class BossAdapter {
     }
 
     await sleep(beforeSendDelay);
+    assertControlActive();
     if (expectedConversationKey) this.assertConversationKey(expectedConversationKey, pendingId);
 
     let confirmed = await strictConfirm(Math.min(15000, confirmTimeout));
@@ -2766,6 +2792,7 @@ class BossAdapter {
     // Enter 没有生效时，只点击当前编辑器附近、此刻可见的发送按钮一次。
     const button = await waitFor(() => this.sendButton(currentInput()), 6000, '当前聊天发送按钮').catch(() => null);
     if (button) {
+      assertControlActive();
       try {
         await this.trustedElementAction('click', button);
         sendMethod = 'debugger-send-button';
@@ -2792,6 +2819,7 @@ class BossAdapter {
   }
 
   async uploadResumeImage(dataUrl, options = {}) {
+    assertControlActive();
     if (!dataUrl || !dataUrl.startsWith('data:')) return { ok: false, skipped: true };
     if (options.expectedConversationKey) this.assertConversationKey(String(options.expectedConversationKey), String(options.pendingId || ''));
     const beforeImages = this.chatImageNodes().length;
@@ -2890,6 +2918,7 @@ async function pauseForVerification() {
 }
 
 async function processApproved(state) {
+  assertControlActive();
   const id = state.workflow?.pendingApplyId;
   if (!id) return false;
   const item = (state.pending || []).find(entry => entry.id === id);
@@ -3199,6 +3228,7 @@ async function processApproved(state) {
 }
 
 async function processSearch(state) {
+  assertControlActive();
   const workflow = state.workflow || {};
   const config = state.config || {};
   const tasks = workflow.tasks || [];
@@ -3501,8 +3531,11 @@ async function processSearch(state) {
         runId, job, task, stage: 'ai_analyze', progress: 42,
         stageLabel: 'AI 匹配分析', status: 'running', retryable: false, setActive: true
       });
+      assertControlActive();
       await waitForRateLimit('ai', 'AI分析');
+      assertControlActive();
       const ai = await send('AI_JOB', { job });
+      assertControlActive();
       analyzedCount += 1;
       await send('STATS', { delta: { analyzed: 1 } });
       if (!ai.ok) {
@@ -3554,6 +3587,7 @@ async function processSearch(state) {
           const latestQueue = await send('CONTENT_STATE');
           const queueDepth = (latestQueue.state?.pending || []).filter(entry => entry.status === 'approved_queue').length;
           if (queueDepth >= Math.max(1, Number(activeConfig.queueWarmup || (normalizeStrategy(activeConfig.batchStrategy) === 'full-mass' ? 3 : 4)))) {
+            assertControlActive();
             const dispatched = await send('AUTO_DISPATCH_NEXT');
             if (dispatched?.started) {
               await updateSearchProgress(task, taskIndex, {
@@ -3579,6 +3613,7 @@ async function processSearch(state) {
       });
       await sleep(600);
     } catch (error) {
+      if (error?.controlSignal || ['JOBCLAW_PAUSED','JOBCLAW_STOPPED'].includes(String(error?.code || ''))) return;
       processed.add(key);
       if (!counted) processedCount += 1;
       failedCount += 1;
@@ -3652,6 +3687,7 @@ async function run() {
     }
     await processSearch(state);
   } catch (error) {
+    if (error?.controlSignal || ['JOBCLAW_PAUSED','JOBCLAW_STOPPED'].includes(String(error?.code || ''))) return;
     if (extensionContextInvalidated || isExtensionContextError(error)) return;
     await send('EVENT', { level: 'warning', message: '页面暂时未就绪，将自动重试', data: { error: error.message, url: location.href } });
     if (!extensionContextInvalidated) {
@@ -3668,8 +3704,24 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     return;
   }
   if (message?.type === 'RUN') {
+    runtimeControl.paused = false;
+    runtimeControl.stopped = false;
+    runtimeControl.revision = Math.max(runtimeControl.revision, Number(message?.revision || 0));
     run();
     reply({ ok: true, contentVersion: JOBCLAW_CONTENT_VERSION, contentBuild: JOBCLAW_CONTENT_BUILD, contentFile: JOBCLAW_CONTENT_FILE });
+    return;
+  }
+  if (message?.type === 'PAUSE_NOW') {
+    runtimeControl.paused = true;
+    runtimeControl.revision = Math.max(runtimeControl.revision, Number(message?.revision || 0));
+    reply({ ok: true, paused: true, revision: runtimeControl.revision });
+    return;
+  }
+  if (message?.type === 'STOP_NOW') {
+    runtimeControl.paused = true;
+    runtimeControl.stopped = true;
+    runtimeControl.revision = Math.max(runtimeControl.revision, Number(message?.revision || 0));
+    reply({ ok: true, stopped: true, revision: runtimeControl.revision });
     return;
   }
   if (message?.type === 'PROBE') {

@@ -9,7 +9,7 @@ const [common, background, html, sidepanel] = await Promise.all([
   readFile(`${root}/sidepanel.js`, 'utf8')
 ]);
 
-if (manifest.version !== '2.0.1') throw new Error(`version mismatch: ${manifest.version}`);
+if (manifest.version !== '2.1.0') throw new Error(`version mismatch: ${manifest.version}`);
 for (const token of ['requireSingleJobValidation: true', 'singleJobValidationCompletedAt: 0']) {
   if (!common.includes(token)) throw new Error(`default missing: ${token}`);
 }

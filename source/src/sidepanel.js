@@ -12,7 +12,7 @@ const SETTINGS_FORM_IDS = [
   'maxSearchTasks', 'maxJobsPerTask', 'stagnationLimit', 'dedupeWindowDays', 'lowQualityPolicy', 'lowQualityThreshold',
   'betweenJobsSeconds', 'attachmentDelaySeconds', 'jitterSeconds', 'maxConsecutiveFailures',
   'companyVerificationProvider', 'companyVerificationCacheDays', 'companyVerificationEnabled',
-  'blockUnknownCompanies', 'updateCheckEnabled', 'dailyReportEnabled', 'dailyReportTime', 'dailyReportNotification', 'sendImage', 'sendOnline', 'baseUrl', 'modelName', 'apiKey'
+  'blockUnknownCompanies', 'updateCheckEnabled', 'dailyReportEnabled', 'dailyReportTime', 'dailyReportNotification', 'sendImage', 'sendOnline', 'aiProviderMode', 'warnWithoutAi', 'baseUrl', 'modelName', 'apiKey', 'localModelEnabled', 'localModelBaseUrl', 'localModelName', 'localModelApiKey'
 ];
 const FORM_IDS = new Set(['resumeText', ...PROFILE_FORM_IDS, ...SETTINGS_FORM_IDS]);
 const dirtyFields = new Set();
@@ -947,7 +947,8 @@ function renderReadiness() {
   const plan = state.directionPlan || {};
   const enabledDirections = selectedDirectionItems(plan).length;
   const profileReady = Boolean(profileGenerated && plan.confirmed && enabledDirections);
-  const settingsReady = Boolean(config.model?.apiKey);
+  const aiStatus = state.aiStatus || {};
+  const settingsReady = Boolean(aiStatus.cloudConfigured || aiStatus.localConfigured || config.aiProviderMode === 'rules' || config.massApplyAnalysis === 'rules');
   const validationRequired = config.requireSingleJobValidation !== false;
   const validationReady = !validationRequired || Number(config.singleJobValidationCompletedAt || 0) > 0;
   const readyCount = [resumeReady, profileReady, settingsReady, validationReady].filter(Boolean).length;
@@ -958,7 +959,7 @@ function renderReadiness() {
   setReadiness('setupValidationIcon', validationReady);
   setText('setupResumeStatus', resumeReady ? `已保存 ${state.resumeText.length} 字` : '尚未保存');
   setText('setupProfileStatus', profileReady ? `${enabledDirections} 个投递方向已应用` : profileGenerated ? '画像已生成 · 待选择投递方向' : '尚未生成');
-  setText('setupSettingsStatus', settingsReady ? 'AI 已配置，搜索条件可用' : '请填写 AI API Key');
+  setText('setupSettingsStatus', aiStatus.cloudConfigured ? `DeepSeek 已配置 · ${aiStatus.cloudModel || 'deepseek-v4-flash'}` : aiStatus.localConfigured ? `本地模型已配置 · ${aiStatus.localModel || 'qwen3:1.7b'}` : '未配置模型 · 将使用本地轻量算法');
   setText('setupValidationStatus', !validationRequired
     ? '已关闭首次单条验收'
     : validationReady
@@ -1158,8 +1159,8 @@ function renderDynamic() {
   $('resetSafety')?.toggleAttribute('disabled', !safety.circuitOpen && !Number(safety.consecutiveFailures || 0));
   $('clearJobHistory')?.toggleAttribute('disabled', !Number(state.jobSeenHistoryCount || 0));
   const update = state.updateInfo || {};
-  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.0.1'));
-  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.0.1'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
+  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.1.0'));
+  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.1.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
   if ($('openUpdate')) $('openUpdate').hidden = !update.available;
   renderStartupFeedback(workflow);
   renderActualSearchContext(workflow);
@@ -1169,6 +1170,7 @@ function renderDynamic() {
 function renderForms(force = false) {
   const config = state.config || {};
   const model = config.model || {};
+  const localModel = config.localModel || {};
   const draft = effectiveProfileDraft();
 
   setFieldValue('resumeText', state.resumeText || '', force);
@@ -1193,7 +1195,9 @@ function renderForms(force = false) {
   setFieldValue('salary', config.salary || '不限', force);
   setFieldValue('minScore', config.minScore ?? 75, force);
   setFieldValue('batchStrategy', normalizedBatchStrategy(config.batchStrategy), force);
-  setFieldValue('massApplyAnalysis', config.massApplyAnalysis || 'fast', force);
+  setFieldValue('massApplyAnalysis', config.massApplyAnalysis || 'auto-ai', force);
+  setFieldValue('aiProviderMode', config.aiProviderMode || 'auto', force);
+  setFieldValue('warnWithoutAi', config.warnWithoutAi !== false, force);
   setFieldValue('greetingStyle', config.greetingStyle === 'natural-project' ? 'human-project' : (config.greetingStyle || 'human-project'), force);
   setFieldValue('pacingPreset', config.pacingPreset || 'standard', force);
   setFieldValue('queueWarmup', config.queueWarmup ?? 4, force);
@@ -1222,8 +1226,12 @@ function renderForms(force = false) {
   setFieldValue('sendImage', config.sendResumeImage !== false, force);
   setFieldValue('sendOnline', Boolean(config.sendOnlineResume), force);
   setFieldValue('baseUrl', model.baseUrl || 'https://api.deepseek.com', force);
-  setFieldValue('modelName', model.model || 'deepseek-v4-pro', force);
+  setFieldValue('modelName', model.model || 'deepseek-v4-flash', force);
   setFieldValue('apiKey', model.apiKey || '', force);
+  setFieldValue('localModelEnabled', Boolean(localModel.enabled), force);
+  setFieldValue('localModelBaseUrl', localModel.baseUrl || 'http://127.0.0.1:11434/v1', force);
+  setFieldValue('localModelName', localModel.model || 'qwen3:1.7b', force);
+  setFieldValue('localModelApiKey', localModel.apiKey || '', force);
   renderDirectionPlan(force);
 }
 
@@ -1531,7 +1539,7 @@ function bindResumeTabs() {
 
 function bindExplicitCollapsibles() {
   const schemaKey = 'jobclaw.collapse.schema';
-  const schema = '2.0.1-collapsed-defaults.1';
+  const schema = '2.1.0-collapsed-defaults.1';
   const resetToCollapsed = localStorage.getItem(schemaKey) !== schema;
   for (const detail of document.querySelectorAll('details[data-collapsible]')) {
     const key = `jobclaw.collapse.${detail.dataset.collapsible}`;
@@ -1744,7 +1752,9 @@ async function saveSettings() {
     ...old,
     executionMode: old.executionMode === 'auto' ? 'auto' : 'review',
     batchStrategy: normalizedBatchStrategy($('batchStrategy').value),
-    massApplyAnalysis: $('massApplyAnalysis').value || 'fast',
+    massApplyAnalysis: $('massApplyAnalysis').value || 'auto-ai',
+    aiProviderMode: $('aiProviderMode').value || 'auto',
+    warnWithoutAi: $('warnWithoutAi').checked,
     greetingStyle: $('greetingStyle').value || 'human-project',
     pacingPreset: $('pacingPreset').value || 'standard',
     queueWarmup: Number($('queueWarmup').value || 4),
@@ -1784,7 +1794,14 @@ async function saveSettings() {
       ...(old.model || {}),
       baseUrl: $('baseUrl').value.trim() || 'https://api.deepseek.com',
       apiKey: $('apiKey').value.trim(),
-      model: $('modelName').value.trim() || 'deepseek-v4-pro'
+      model: $('modelName').value.trim() || 'deepseek-v4-flash'
+    },
+    localModel: {
+      ...(old.localModel || {}),
+      enabled: $('localModelEnabled').checked,
+      baseUrl: $('localModelBaseUrl').value.trim() || 'http://127.0.0.1:11434/v1',
+      apiKey: $('localModelApiKey').value.trim(),
+      model: $('localModelName').value.trim() || 'qwen3:1.7b'
     }
   };
   const result = await send('SAVE_CONFIG', { config });
@@ -1814,6 +1831,34 @@ async function setBatchStrategy(strategy) {
   await refresh({ forms: true, forceForms: true });
 }
 
+function aiModelConfigured() {
+  const status = state.aiStatus || {};
+  return Boolean(status.cloudConfigured || status.localConfigured || state.config?.aiProviderMode === 'rules' || state.config?.massApplyAnalysis === 'rules');
+}
+
+function confirmStartWithoutAi() {
+  if (state.config?.warnWithoutAi === false || aiModelConfigured()) return Promise.resolve(true);
+  const modal = $('aiWarningModal');
+  if (!modal) return Promise.resolve(window.confirm('当前没有可用的 AI 模型，将使用本地轻量算法继续，招呼语质量可能下降。是否继续？'));
+  modal.hidden = false;
+  return new Promise(resolve => {
+    const finish = value => {
+      modal.hidden = true;
+      $('continueWithoutAi').onclick = null;
+      $('configureAiNow').onclick = null;
+      resolve(value);
+    };
+    $('continueWithoutAi').onclick = () => finish(true);
+    $('configureAiNow').onclick = () => {
+      finish(false);
+      activateMainPage('settings');
+      const details = document.querySelector('details[data-collapsible="ai-settings"]');
+      if (details) details.open = true;
+      requestAnimationFrame(() => details?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    };
+  });
+}
+
 function bindActions() {
   for (const button of document.querySelectorAll('[data-execution-mode]')) {
     button.addEventListener('click', () => setExecutionMode(button.dataset.executionMode));
@@ -1825,6 +1870,7 @@ function bindActions() {
     const button = $('startTask');
     const label = button.querySelector('span');
     const requestId = crypto.randomUUID();
+    if (!await confirmStartWithoutAi()) return;
     button.disabled = true;
     if (label) label.textContent = '正在连接…';
     try {
@@ -1856,9 +1902,16 @@ function bindActions() {
     showToast(result.ok ? '已打开 BOSS 职位页 请等待页面加载后重试' : (result.error || '打开职位页失败'), !result.ok);
   });
   $('pauseTask').addEventListener('click', async () => {
-    const result = await send('PAUSE');
-    showToast(result.ok ? '任务已暂停' : result.error, !result.ok);
+    const button = $('pauseTask');
+    const label = button.querySelector('span');
+    button.disabled = true;
+    if (label) label.textContent = '正在暂停…';
+    state.workflow = { ...(state.workflow || {}), paused: true, phase: 'pausing', statusText: '正在立即暂停…' };
+    renderDynamic();
+    const result = await send('PAUSE', {}, { timeoutMs: 3500, label: '立即暂停' });
+    showToast(result.ok ? '任务已立即暂停' : (result.error || '暂停失败'), !result.ok);
     await refresh({ forms: false });
+    if (label) label.textContent = '暂停';
   });
   $('stopTask').addEventListener('click', async () => {
     const result = await send('STOP');

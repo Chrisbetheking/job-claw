@@ -7,7 +7,7 @@ const content = await readFile(`${root}/content-v37.js`, 'utf8');
 const sidepanel = await readFile(`${root}/sidepanel.js`, 'utf8');
 const jobPriority = await readFile(`${root}/lib/job-priority.js`, 'utf8');
 
-if (manifest.version !== '2.0.1') throw new Error(`UI37 version mismatch: ${manifest.version}`);
+if (manifest.version !== '2.1.0') throw new Error(`UI37 version mismatch: ${manifest.version}`);
 if (!manifest.content_scripts?.some(item => item.js?.includes('content-v37.js'))) throw new Error('content-v37.js not registered');
 for (const permission of ['offscreen', 'clipboardWrite', 'debugger']) {
   if (!manifest.permissions.includes(permission)) throw new Error(`missing permission ${permission}`);
@@ -59,7 +59,7 @@ const data = {
     sendOnlineResume: false,
     betweenJobsSeconds: 12,
     attachmentDelaySeconds: 4,
-    model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-pro', temperature: 0.1 }
+    model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-flash', temperature: 0.1 }
   },
   workflow: { running: false, paused: true, phase: 'idle', tasks: [], taskIndex: 0, cardIndex: 0, processedKeys: [], pendingApplyId: null, activeRunId: null },
   pending: [],
@@ -101,7 +101,7 @@ globalThis.chrome = {
   tabs: {
     query: async () => [{ id: 1, url: 'https://www.zhipin.com/web/geek/job', status: 'complete', title: 'BOSS' }],
     sendMessage: async (tabId, message) => message.type === 'PROBE'
-      ? { ok: true, contentVersion: '2.0.1', contentBuild: '2.0.1-greeting-hotfix.1', contentFile: 'content-v37.js', pageType: 'jobs' }
+      ? { ok: true, contentVersion: '2.1.0', contentBuild: '2.1.0-ai-pause.2', contentFile: 'content-v37.js', pageType: 'jobs' }
       : { ok: true },
     reload: async () => {},
     get: async () => ({ id: 1, url: 'https://www.zhipin.com/web/geek/job', status: 'complete' }),

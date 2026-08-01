@@ -7,8 +7,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const content = fs.readFileSync(path.join(root, 'src', 'content-v37.js'), 'utf8');
 const background = fs.readFileSync(path.join(root, 'src', 'background.js'), 'utf8');
 
-assert.match(content, /2\.0\.1-greeting-hotfix\.1/);
-assert.match(background, /2\.0\.1-greeting-hotfix\.1/);
+assert.match(content, /2\.1\.0-ai-pause\.2/);
+assert.match(background, /2\.1\.0-ai-pause\.2/);
 assert.match(content, /BOSS_SEARCH_ROUTE/);
 assert.match(content, /NAVIGATE_BOSS_SEARCH/);
 assert.match(content, /pendingSearchNavigation/);

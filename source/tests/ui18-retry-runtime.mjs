@@ -4,8 +4,8 @@ const data = {
   ui10UnlimitedV4Migration: true,
   ui12ProfileDraftMigration: true,
   ui18TaskProgressMigration: true,
-  bossContentRuntimeVersion: '2.0.1',
-  config: { executionMode: 'auto', dailyTarget: 150, model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-pro' } },
+  bossContentRuntimeVersion: '2.1.0',
+  config: { executionMode: 'auto', dailyTarget: 150, model: { baseUrl: 'https://api.deepseek.com', apiKey: 'x', model: 'deepseek-v4-flash' } },
   stats: { date: new Date().toISOString().slice(0, 10), sent: 0, discovered: 1, analyzed: 1, pending: 0, failed: 1, replied: 0, interviews: 0 },
   workflow: { running: false, paused: true, phase: 'idle', statusText: '未开始', tasks: [], taskIndex: 0, cardIndex: 0, processedKeys: [], retries: 0, currentJob: null, returnUrl: '', returnScrollY: 0, pendingApplyId: null, activeRunId: null },
   pending: [{ id: 'pending-1', runId: 'run-1', status: 'failed', job: { title: '前端实习生', company: '测试公司', url: 'https://www.zhipin.com/job_detail/abc' }, analysis: { score: 88, greeting: '您好，我想应聘贵公司的前端实习生岗位。' }, task: { keyword: '前端实习生' }, error: '等待聊天输入框超时', createdAt: now - 1000, completedAt: now }],
@@ -36,7 +36,7 @@ globalThis.chrome = {
     reload: async () => {},
     create: async ({ url }) => ({ id: 88, url }),
     sendMessage: async (_id, message) => {
-      if (message.type === 'PROBE') return { ok: true, contentVersion: '2.0.1', contentBuild: '2.0.1-greeting-hotfix.1', contentFile: 'content-v37.js', pageType: 'jobs' };
+      if (message.type === 'PROBE') return { ok: true, contentVersion: '2.1.0', contentBuild: '2.1.0-ai-pause.2', contentFile: 'content-v37.js', pageType: 'jobs' };
       if (message.type === 'RUN') { runCount += 1; return { ok: true }; }
       return { ok: true };
     }

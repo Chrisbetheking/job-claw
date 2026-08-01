@@ -5,7 +5,7 @@ const content = await readFile('src/content-v37.js', 'utf8');
 const panelJs = await readFile('src/sidepanel.js', 'utf8');
 const panelHtml = await readFile('public/sidepanel.html', 'utf8');
 
-assert.match(content, /2\.0\.1-greeting-hotfix\.1/);
+assert.match(content, /2\.1\.0-ai-pause\.2/);
 assert.match(content, /async ensureSearchRoute\(task, workflow = \{\}\)/);
 assert.match(content, /async applyHeaderCityFilter\(value\)/);
 assert.match(content, /headerCityTrigger\(\)/);
@@ -23,7 +23,7 @@ assert.ok(searchIndex > fallbackIndex, 'keyword search must happen after city ro
 assert.ok(filterIndex > searchIndex, 'result filters must happen after keyword search');
 
 assert.doesNotMatch(panelHtml, /data-collapsible="[^"]+"\s+open/);
-assert.match(panelJs, /2\.0\.1-collapsed-defaults\.1/);
+assert.match(panelJs, /2\.1\.0-collapsed-defaults\.1/);
 assert.match(panelJs, /detail\.open = false/);
 assert.match(panelJs, /localStorage\.removeItem\(key\)/);
 

@@ -318,7 +318,7 @@
             <select id="batchStrategy" class="visually-hidden-control" tabindex="-1" aria-hidden="true"><option value="full-mass">完全海投</option><option value="safe-mass">安全海投</option></select>
           </div>
           <div class="field-grid two compact-settings">
-            <label class="field"><span>海投分析方式</span><select id="massApplyAnalysis"><option value="fast">快速模式 不逐岗调用AI</option><option value="ai">AI个性化分析</option></select><small>快速模式使用简历事实生成基础招呼语 AI模式更个性化但速度和成本更高</small></label>
+            <label class="field"><span>海投分析方式</span><select id="massApplyAnalysis"><option value="auto-ai">智能自动 默认</option><option value="cloud">仅 DeepSeek V4 Flash</option><option value="local">仅本地轻量模型</option><option value="rules">本地轻量算法</option></select><small>默认优先 DeepSeek V4 Flash 未配置时尝试本地模型 最后回退本地轻量算法</small></label>
             <label class="field"><span>招呼语风格</span><select id="greetingStyle"><option value="human-project">完整求职介绍 默认</option><option value="concise">简短直接</option><option value="skill-first">技术切入</option></select><small>默认包含姓名 学校 到岗时间 技术 项目和负责模块 只使用简历真实事实</small></label>
             <label class="switch-line compact-switch"><input id="dryRun" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>模拟运行</b><small>完成采集 核验 分析和队列预览 绝不发送消息</small></span></label>
           </div>
@@ -396,20 +396,29 @@
 
         <details class="module-card collapsible" data-collapsible="ai-settings">
           <summary>
-            <span><b>AI 模型连接</b><small>默认使用 DeepSeek V4 Pro，也可切换 V4 Flash / 兼容接口</small></span>
+            <span><b>AI 模型连接</b><small>推荐 DeepSeek V4 Flash 也支持本地 Qwen3 和兼容接口</small></span>
             <i class="chevron"></i>
           </summary>
           <div class="module-body form-grid">
+            <label class="field"><span>AI 路由</span><select id="aiProviderMode"><option value="auto">自动选择 推荐</option><option value="cloud">仅云端 DeepSeek</option><option value="local">仅本地模型</option><option value="rules">仅本地轻量算法</option></select><small>自动模式优先云端 API 其次本地模型 最后使用无需下载的本地轻量算法</small></label>
+            <label class="switch-line compact-switch"><input id="warnWithoutAi" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>未配置 AI 时启动提醒</b><small>允许继续 但会提示招呼语质量可能下降</small></span></label>
+            <div class="subsection-title"><b>DeepSeek 云端</b><small>默认推荐 V4 Flash</small></div>
             <label class="field"><span>Base URL</span><input id="baseUrl" type="url" placeholder="https://api.deepseek.com"></label>
-            <label class="field"><span>模型名称</span><input id="modelName" type="text" list="deepseekV4Models" placeholder="deepseek-v4-pro"><small>默认 deepseek-v4-pro；追求速度和成本可用 deepseek-v4-flash。</small></label>
-            <datalist id="deepseekV4Models"><option value="deepseek-v4-pro"></option><option value="deepseek-v4-flash"></option></datalist>
+            <label class="field"><span>模型名称</span><input id="modelName" type="text" list="deepseekV4Models" placeholder="deepseek-v4-flash"><small>默认 deepseek-v4-flash 适合逐岗分析与招呼语生成</small></label>
+            <datalist id="deepseekV4Models"><option value="deepseek-v4-flash"></option><option value="deepseek-v4-pro"></option></datalist>
             <label class="field"><span>API Key</span><input id="apiKey" type="password" autocomplete="off" placeholder="保存后显示 ***"></label>
-            <div class="button-row"><button class="button button-secondary" id="testAi">测试 AI 连接</button><span class="inline-result" id="aiTestResult"></span></div>
+            <div class="subsection-title"><b>本地轻量模型 可选</b><small>推荐 Qwen3 1.7B 通过 Ollama 或 llama.cpp 提供 OpenAI 兼容接口</small></div>
+            <label class="switch-line compact-switch"><input id="localModelEnabled" type="checkbox"><span class="switch-ui"></span><span class="switch-copy"><b>启用本地模型</b><small>模型权重不会打包进扩展 需要在本机单独运行</small></span></label>
+            <label class="field"><span>本地 Base URL</span><input id="localModelBaseUrl" type="url" placeholder="http://127.0.0.1:11434/v1"></label>
+            <label class="field"><span>本地模型名称</span><input id="localModelName" type="text" list="localModels" placeholder="qwen3:1.7b"><small>超轻量可用 qwen3:0.6b 中文质量更推荐 qwen3:1.7b</small></label>
+            <datalist id="localModels"><option value="qwen3:1.7b"></option><option value="qwen3:0.6b"></option></datalist>
+            <label class="field"><span>本地接口 Key 可选</span><input id="localModelApiKey" type="password" autocomplete="off" placeholder="通常留空"></label>
+            <div class="button-row"><button class="button button-secondary" id="testAi">测试当前 AI 路由</button><span class="inline-result" id="aiTestResult"></span></div>
           </div>
         </details>
 
         <article class="module-card update-card">
-          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 2.0.1</small></div><span class="pill" id="updateVersionPill">2.0.1</span></div>
+          <div class="module-title"><div><b>版本更新</b><small id="updateStatusText">当前版本 2.1.0</small></div><span class="pill" id="updateVersionPill">2.1.0</span></div>
           <div class="button-row"><button class="button button-secondary" id="checkUpdate" type="button">检查更新</button><button class="button button-primary" id="openUpdate" type="button" hidden>查看新版本</button></div>
         </article>
 
@@ -493,6 +502,15 @@
     </nav>
   </div>
 
+
+  <div class="modal-backdrop" id="aiWarningModal" hidden>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aiWarningTitle">
+      <span class="eyebrow">AI 配置提醒</span>
+      <h2 id="aiWarningTitle">当前没有可用的 AI 模型</h2>
+      <p>你仍然可以继续使用本地轻量算法 但岗位分析和招呼语质量可能低于 DeepSeek V4 Flash 或本地 Qwen3 模型</p>
+      <div class="modal-actions"><button class="button button-secondary" id="continueWithoutAi">继续使用本地算法</button><button class="button button-primary" id="configureAiNow">去配置 AI</button></div>
+    </section>
+  </div>
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   <script type="module" src="sidepanel.js"></script>
 </body>
