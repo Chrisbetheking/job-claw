@@ -45,5 +45,6 @@ const result = await request('START');
 if (result.ok) throw new Error('START should fail');
 if (/Could not establish|Receiving end|Cannot access contents/i.test(result.error || '')) throw new Error(`raw browser error leaked: ${result.error}`);
 if (!/当前页面无法接入|BOSS 页面/.test(result.error || '')) throw new Error(`friendly error missing: ${result.error}`);
-if (data.workflow?.running) throw new Error('workflow incorrectly left running');
-console.log(JSON.stringify({ ok: true, friendlyError: 'PASS', noRawEnglish: 'PASS', workflowNotStarted: 'PASS' }, null, 2));
+if (!result.autoRecovering) throw new Error('startup failure should enter automatic recovery');
+if (!data.workflow?.running || !data.workflow?.paused || data.workflow?.phase !== 'auto_recovery') throw new Error('workflow automatic recovery state missing');
+console.log(JSON.stringify({ ok: true, friendlyError: 'PASS', noRawEnglish: 'PASS', autoRecoveryScheduled: 'PASS' }, null, 2));

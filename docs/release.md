@@ -24,7 +24,7 @@ npm test
 从 `main` 创建发布分支，例如：
 
 ```text
-release/v2.1.0
+release/v2.2.0
 ```
 
 通过 Pull Request 合并，不直接上传整包到 `main`。
@@ -34,7 +34,7 @@ release/v2.1.0
 在合并后的 `main` 最新提交创建：
 
 ```text
-v2.1.0
+v2.2.0
 ```
 
 标签必须与 Manifest 版本完全一致。

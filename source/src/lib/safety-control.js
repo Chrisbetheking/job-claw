@@ -1,3 +1,5 @@
+import { classifyIncident, recoveryDelayMs } from './incident-recovery.js';
+
 const PRESETS = {
   conservative: { discovery: 1800, ai: 1000, company: 2200, delivery: 15000, attachment: 4000, queueWarmup: 5 },
   standard: { discovery: 1000, ai: 700, company: 1800, delivery: 9000, attachment: 3000, queueWarmup: 4 },
@@ -31,9 +33,12 @@ export function normalizeSafetyConfig(config = {}) {
     pacingPreset,
     dryRun: Boolean(config.dryRun),
     discoveryLimit: Math.max(1, Math.min(800, Number(config.discoveryLimit || 150))),
-    dailyTarget: Math.max(1, Math.min(150, Number(config.dailyTarget || 30))),
+    dailyTarget: Math.max(1, Math.min(150, Number(config.dailyTarget || 150))),
     maxPerCompanyPerDay: Math.max(1, Math.min(12, Number(config.maxPerCompanyPerDay || 3))),
-    maxConsecutiveFailures: Math.max(1, Math.min(10, Number(config.maxConsecutiveFailures || rate.maxConsecutiveFailures || 3))),
+    maxConsecutiveFailures: Math.max(1, Math.min(10, Number(config.maxConsecutiveFailures || rate.maxConsecutiveFailures || 6))),
+    autoRecoveryEnabled: config.autoRecoveryEnabled !== false,
+    autoRecoveryMaxAttempts: Math.max(1, Math.min(6, Number(config.autoRecoveryMaxAttempts || 3))),
+    autoRecoveryCooldownSeconds: Math.max(20, Math.min(1800, Number(config.autoRecoveryCooldownSeconds || 45))),
     jitterSeconds: Math.max(0, Math.min(15, Number(config.jitterSeconds ?? rate.jitterSeconds ?? 3))),
     queueWarmup: Math.max(1, Math.min(10, Number(config.queueWarmup || preset.queueWarmup))),
     intervals: {
@@ -58,7 +63,18 @@ export function createSafetyState(input = {}) {
     lastFailureAt: Number(input.lastFailureAt || 0),
     totalThrottled: Math.max(0, Number(input.totalThrottled || 0)),
     backoffLevel: Math.max(0, Math.min(4, Number(input.backoffLevel || 0))),
-    lastBackoffReason: String(input.lastBackoffReason || '')
+    lastBackoffReason: String(input.lastBackoffReason || ''),
+    currentIncident: input.currentIncident && typeof input.currentIncident === 'object' ? { ...input.currentIncident } : null,
+    lastSuggestion: String(input.lastSuggestion || ''),
+    autoRecovering: Boolean(input.autoRecovering),
+    recoveryPlan: input.recoveryPlan && typeof input.recoveryPlan === 'object' ? { ...input.recoveryPlan } : null,
+    nextRecoveryAt: Math.max(0, Number(input.nextRecoveryAt || 0)),
+    recoveryAttempts: Math.max(0, Number(input.recoveryAttempts || 0)),
+    lastRecoveryResult: String(input.lastRecoveryResult || ''),
+    totalAutoRecovered: Math.max(0, Number(input.totalAutoRecovered || 0)),
+    totalAutoSkipped: Math.max(0, Number(input.totalAutoSkipped || 0)),
+    totalUserInterventions: Math.max(0, Number(input.totalUserInterventions || 0)),
+    incidentHistory: (Array.isArray(input.incidentHistory) ? input.incidentHistory : []).slice(0, 30)
   };
 }
 
@@ -103,25 +119,70 @@ export function recordSafetyOutcome(config = {}, state = {}, outcome = {}, now =
     return {
       ...current,
       consecutiveFailures: 0,
+      circuitOpen: false,
+      circuitReason: '',
+      circuitOpenedAt: 0,
       lastSuccessAt: now,
       backoffLevel: Math.max(0, current.backoffLevel - 1),
-      lastBackoffReason: current.backoffLevel > 0 ? current.lastBackoffReason : ''
+      lastBackoffReason: current.backoffLevel > 0 ? current.lastBackoffReason : '',
+      currentIncident: null,
+      lastSuggestion: '',
+      autoRecovering: false,
+      recoveryPlan: null,
+      nextRecoveryAt: 0,
+      recoveryAttempts: 0,
+      lastRecoveryResult: outcome.recoveryResult || current.lastRecoveryResult
     };
   }
+
   const failures = current.consecutiveFailures + 1;
-  const reason = String(outcome.reason || '连续任务失败');
-  const hardTrip = /验证码|安全验证|账号限制|登录异常|403|429|频率限制|身份不一致|无法确认发送/i.test(reason);
-  const transient = /超时|加载慢|网络|暂不可用|连接失败|服务繁忙/i.test(reason);
-  const circuitOpen = hardTrip || failures >= safety.maxConsecutiveFailures;
+  let incident = classifyIncident({ ...outcome, now }, config);
+  const repeatThreshold = Math.max(3, Number(safety.maxConsecutiveFailures || 6));
+  if (incident.category === 'unknown_soft' && failures >= repeatThreshold) {
+    incident = {
+      ...incident,
+      category: 'repeated_unknown',
+      action: 'repair-page',
+      title: '连续出现未知页面异常',
+      suggestion: '系统会自动刷新并重新连接 BOSS 页面，恢复后从断点继续。'
+    };
+  }
+  const hardStop = incident.hardStop === true || incident.requiresUser === true;
+  const autoRecovering = Boolean(config.autoRecoveryEnabled !== false && incident.autoRecoverable && ['cooldown', 'repair-page', 'retry-then-skip'].includes(incident.action));
+  const nextAttempt = autoRecovering ? Math.max(1, Number(current.recoveryAttempts || 0) + 1) : 0;
+  const delayMs = autoRecovering ? recoveryDelayMs(incident, nextAttempt) : 0;
+  const nextRecoveryAt = autoRecovering ? now + delayMs : 0;
+  const transient = ['transient_network', 'rate_limit', 'page_connection', 'filter_failure', 'repeated_unknown'].includes(incident.category);
+  const historyEntry = {
+    id: incident.id,
+    ts: now,
+    category: incident.category,
+    title: incident.title,
+    reason: incident.reason,
+    suggestion: incident.suggestion,
+    action: incident.action,
+    autoRecoverable: incident.autoRecoverable,
+    requiresUser: incident.requiresUser
+  };
+
   return {
     ...current,
     consecutiveFailures: failures,
     lastFailureAt: now,
-    circuitOpen,
-    circuitReason: circuitOpen ? reason : current.circuitReason,
-    circuitOpenedAt: circuitOpen ? now : current.circuitOpenedAt,
+    circuitOpen: hardStop,
+    circuitReason: hardStop ? incident.reason : '',
+    circuitOpenedAt: hardStop ? now : 0,
     backoffLevel: Math.min(4, current.backoffLevel + (transient ? 1 : 0)),
-    lastBackoffReason: transient ? reason : current.lastBackoffReason
+    lastBackoffReason: transient ? incident.reason : current.lastBackoffReason,
+    currentIncident: incident,
+    lastSuggestion: incident.suggestion || '',
+    autoRecovering,
+    recoveryPlan: autoRecovering ? { ...incident, attempt: nextAttempt, scheduledAt: now, nextRecoveryAt } : null,
+    nextRecoveryAt,
+    recoveryAttempts: nextAttempt,
+    totalAutoSkipped: current.totalAutoSkipped + (incident.action === 'skip-job' ? 1 : 0),
+    totalUserInterventions: current.totalUserInterventions + (hardStop ? 1 : 0),
+    incidentHistory: [historyEntry, ...current.incidentHistory].slice(0, 30)
   };
 }
 
@@ -135,7 +196,22 @@ export function resetSafetyCircuit(state = {}, now = Date.now()) {
     circuitOpenedAt: 0,
     backoffLevel: 0,
     lastBackoffReason: '',
-    lastSuccessAt: now
+    lastSuccessAt: now,
+    currentIncident: null,
+    lastSuggestion: '',
+    autoRecovering: false,
+    recoveryPlan: null,
+    nextRecoveryAt: 0,
+    recoveryAttempts: 0
+  };
+}
+
+export function completeAutoRecovery(state = {}, result = '', now = Date.now()) {
+  const current = createSafetyState(state);
+  return {
+    ...resetSafetyCircuit(current, now),
+    totalAutoRecovered: current.totalAutoRecovered + 1,
+    lastRecoveryResult: String(result || '已自动恢复并继续任务')
   };
 }
 

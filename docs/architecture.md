@@ -56,3 +56,27 @@ Chrome 侧边栏
 ## OpenClaw
 
 OpenClaw 通过 localhost HTTP 或 Chrome Native Messaging 与扩展连接，只监听本机回环地址，数据默认保存在 `~/.jobclaw`。
+
+## 异常诊断与自动恢复
+
+v2.2 在 `lib/incident-recovery.js` 中统一分类异常，Background 只根据分类结果执行恢复策略：
+
+```text
+安全验证 / 登录失效 / 身份错位 / 发送不确定
+→ 强制人工确认
+
+页面连接 / 筛选失败 / 网络超时 / 频率限制
+→ 生成恢复计划
+→ Chrome Alarm 定时恢复
+→ 页面探测或刷新
+→ 从持久化断点继续
+
+聊天入口或单岗位失效
+→ 冷却或跳过当前岗位
+→ 继续后续队列
+
+AI / 企业 Provider 失败
+→ 降级到本地模型、轻量算法或本地风险规则
+```
+
+恢复计划会持久化异常类型、建议、下一次恢复时间、尝试次数和结果。Service Worker 被系统回收后，Chrome Alarm 和一分钟 Tick 仍会继续检查恢复计划。

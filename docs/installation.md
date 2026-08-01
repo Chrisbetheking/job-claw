@@ -2,7 +2,7 @@
 
 ## 从 Release 安装
 
-1. 在 GitHub Releases 下载 `JobClaw-v2.1.0.zip`
+1. 在 GitHub Releases 下载 `JobClaw-v2.2.0.zip`
 2. 解压 ZIP
 3. 打开 `chrome://extensions`
 4. 开启“开发者模式”

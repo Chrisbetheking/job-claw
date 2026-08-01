@@ -10,7 +10,7 @@ const SETTINGS_FORM_IDS = [
   'locations', 'expandNationwideToCities', 'cityRotationCities', 'types', 'experience', 'degree', 'salary', 'minScore',
   'batchStrategy', 'massApplyAnalysis', 'greetingStyle', 'pacingPreset', 'queueWarmup', 'dryRun', 'dailyTarget', 'discoveryLimit', 'maxPerCompanyPerDay',
   'maxSearchTasks', 'maxJobsPerTask', 'stagnationLimit', 'dedupeWindowDays', 'lowQualityPolicy', 'lowQualityThreshold',
-  'betweenJobsSeconds', 'attachmentDelaySeconds', 'jitterSeconds', 'maxConsecutiveFailures',
+  'betweenJobsSeconds', 'attachmentDelaySeconds', 'jitterSeconds', 'maxConsecutiveFailures', 'autoRecoveryEnabled', 'autoRecoveryMaxAttempts', 'autoRecoveryCooldownSeconds',
   'companyVerificationProvider', 'companyVerificationCacheDays', 'companyVerificationEnabled',
   'blockUnknownCompanies', 'updateCheckEnabled', 'dailyReportEnabled', 'dailyReportTime', 'dailyReportNotification', 'sendImage', 'sendOnline', 'aiProviderMode', 'warnWithoutAi', 'baseUrl', 'modelName', 'apiKey', 'localModelEnabled', 'localModelBaseUrl', 'localModelName', 'localModelApiKey'
 ];
@@ -1113,6 +1113,31 @@ function renderDynamic() {
   setText('statAnalyzed', stats.analyzed || 0);
   setText('statPending', pendingCount);
   setText('statSent', stats.sent || 0);
+  const dailyTarget = Math.max(1, Number(state.config?.dailyTarget || 150));
+  const dailySent = Math.max(0, Number(stats.sent || 0));
+  const dailyRemaining = Math.max(0, dailyTarget - dailySent);
+  const dailyPercent = Math.min(100, Math.round((dailySent / dailyTarget) * 100));
+  setText('dailyGoalText', `${dailySent} / ${dailyTarget} 已完成 · ${dailyPercent}%`);
+  setText('dailyGoalPill', dailyRemaining > 0 ? `剩余 ${dailyRemaining}` : '今日目标完成');
+  setText('dailyGoalRecovery', `自动修复 ${Number(stats.autoRecovered || state.safetyState?.totalAutoRecovered || 0)}`);
+  setText('dailyGoalSkipped', `自动跳过 ${Number(stats.autoSkipped || state.safetyState?.totalAutoSkipped || 0)}`);
+  setText('dailyGoalManual', `需人工 ${Number(stats.userInterventions || state.safetyState?.totalUserInterventions || 0)}`);
+  const goalProgress = $('dailyGoalProgress');
+  if (goalProgress) {
+    goalProgress.setAttribute('aria-valuemax', String(dailyTarget));
+    goalProgress.setAttribute('aria-valuenow', String(Math.min(dailyTarget, dailySent)));
+  }
+  if ($('dailyGoalBar')) $('dailyGoalBar').style.width = `${dailyPercent}%`;
+  const homeIncident = state.safetyState?.currentIncident || null;
+  const showHomeRecovery = Boolean(homeIncident || state.safetyState?.autoRecovering || state.safetyState?.circuitOpen);
+  $('homeRecoveryCard')?.toggleAttribute('hidden', !showHomeRecovery);
+  $('homeRecoveryCard')?.classList.toggle('requires-user', Boolean(state.safetyState?.circuitOpen));
+  $('homeRecoveryCard')?.classList.toggle('recovering', Boolean(state.safetyState?.autoRecovering));
+  setText('homeRecoveryEyebrow', state.safetyState?.circuitOpen ? '需要处理' : '自动恢复');
+  setText('homeRecoveryTitle', homeIncident?.title || (state.safetyState?.autoRecovering ? '正在自动修复异常' : '任务异常'));
+  setText('homeRecoveryText', homeIncident?.suggestion || state.safetyState?.lastRecoveryResult || '系统会自动处理并从断点继续');
+  $('homeAutoRecover')?.toggleAttribute('hidden', Boolean(state.safetyState?.circuitOpen));
+  $('homeContinueIncident')?.toggleAttribute('hidden', !state.safetyState?.circuitOpen);
   setText('workflowStatus', workflow.statusText || '未开始');
   setText('workflowPhase', workflow.phase || 'idle');
   const activeRun = (state.taskRuns || []).find(run => run.id === workflow.activeRunId)
@@ -1151,16 +1176,33 @@ function renderDynamic() {
   renderEvents('homeEvents', state.events);
   renderEvents('messageEvents', state.events);
   const safety = state.safetyState || {};
-  setText('safetyStateTitle', safety.circuitOpen ? '安全熔断已开启' : '安全调度正常');
-  setText('safetyStateText', safety.circuitOpen ? (safety.circuitReason || '请检查页面后重置') : `连续失败 ${Number(safety.consecutiveFailures || 0)} · 自适应降速 ${Number(safety.backoffLevel || 0)} 级 · 已限速 ${Number(safety.totalThrottled || 0)} 次`);
+  const incident = safety.currentIncident || null;
+  const recoverySeconds = safety.nextRecoveryAt ? Math.max(0, Math.ceil((Number(safety.nextRecoveryAt) - Date.now()) / 1000)) : 0;
+  const safetyTitle = safety.circuitOpen
+    ? (incident?.title || '需要你的处理')
+    : (safety.autoRecovering ? '正在自动修复' : '安全调度正常');
+  const safetyText = safety.circuitOpen
+    ? (incident?.suggestion || safety.circuitReason || '请根据建议处理后继续')
+    : (safety.autoRecovering
+      ? `${incident?.title || '可恢复异常'} · ${recoverySeconds > 0 ? `${recoverySeconds} 秒后自动重试` : '正在恢复'}`
+      : `连续失败 ${Number(safety.consecutiveFailures || 0)} · 自动修复 ${Number(safety.totalAutoRecovered || 0)} 次 · 自动跳过 ${Number(safety.totalAutoSkipped || 0)} 次`);
+  setText('safetyStateTitle', safetyTitle);
+  setText('safetyStateText', safetyText);
+  setText('safetySuggestion', incident?.suggestion || safety.lastRecoveryResult || '普通页面异常会自动重试或跳过，只有验证码、登录失效、HR身份不一致和发送结果不确定才需要人工处理。');
+  setText('recoveryMetrics', `自适应降速 ${Number(safety.backoffLevel || 0)} 级 · 已限速 ${Number(safety.totalThrottled || 0)} 次 · 需人工 ${Number(safety.totalUserInterventions || 0)} 次`);
+  $('incidentAdvice')?.toggleAttribute('hidden', !incident && !safety.lastRecoveryResult);
+  $('incidentAdvice')?.classList.toggle('requires-user', Boolean(safety.circuitOpen));
+  $('incidentAdvice')?.classList.toggle('recovering', Boolean(safety.autoRecovering));
   setText('jobHistoryCount', `岗位去重记忆 ${Number(state.jobSeenHistoryCount || 0)} 条`);
   $('probeAndRepair')?.toggleAttribute('disabled', false);
+  $('autoRecoverNow')?.toggleAttribute('disabled', !safety.autoRecovering && !incident);
+  $('continueIncident')?.toggleAttribute('disabled', !safety.circuitOpen);
   $('resetAndResume')?.toggleAttribute('disabled', false);
-  $('resetSafety')?.toggleAttribute('disabled', !safety.circuitOpen && !Number(safety.consecutiveFailures || 0));
+  $('resetSafety')?.toggleAttribute('disabled', !safety.circuitOpen && !Number(safety.consecutiveFailures || 0) && !safety.autoRecovering);
   $('clearJobHistory')?.toggleAttribute('disabled', !Number(state.jobSeenHistoryCount || 0));
   const update = state.updateInfo || {};
-  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.1.0'));
-  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.1.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
+  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.2.0'));
+  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.2.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
   if ($('openUpdate')) $('openUpdate').hidden = !update.available;
   renderStartupFeedback(workflow);
   renderActualSearchContext(workflow);
@@ -1202,7 +1244,7 @@ function renderForms(force = false) {
   setFieldValue('pacingPreset', config.pacingPreset || 'standard', force);
   setFieldValue('queueWarmup', config.queueWarmup ?? 4, force);
   setFieldValue('dryRun', Boolean(config.dryRun), force);
-  setFieldValue('dailyTarget', config.dailyTarget ?? 30, force);
+  setFieldValue('dailyTarget', config.dailyTarget ?? 150, force);
   setFieldValue('discoveryLimit', config.discoveryLimit ?? 100, force);
   setFieldValue('maxPerCompanyPerDay', config.maxPerCompanyPerDay ?? 2, force);
   setFieldValue('maxSearchTasks', config.maxSearchTasks ?? 120, force);
@@ -1214,7 +1256,10 @@ function renderForms(force = false) {
   setFieldValue('betweenJobsSeconds', config.betweenJobsSeconds ?? 15, force);
   setFieldValue('attachmentDelaySeconds', config.attachmentDelaySeconds ?? 4, force);
   setFieldValue('jitterSeconds', config.jitterSeconds ?? 4, force);
-  setFieldValue('maxConsecutiveFailures', config.maxConsecutiveFailures ?? 3, force);
+  setFieldValue('maxConsecutiveFailures', config.maxConsecutiveFailures ?? 6, force);
+  setFieldValue('autoRecoveryEnabled', config.autoRecoveryEnabled !== false, force);
+  setFieldValue('autoRecoveryMaxAttempts', config.autoRecoveryMaxAttempts ?? 3, force);
+  setFieldValue('autoRecoveryCooldownSeconds', config.autoRecoveryCooldownSeconds ?? 45, force);
   setFieldValue('companyVerificationProvider', config.companyVerificationProvider || 'bridge', force);
   setFieldValue('companyVerificationCacheDays', config.companyVerificationCacheDays ?? 14, force);
   setFieldValue('companyVerificationEnabled', config.companyVerificationEnabled !== false, force);
@@ -1539,7 +1584,7 @@ function bindResumeTabs() {
 
 function bindExplicitCollapsibles() {
   const schemaKey = 'jobclaw.collapse.schema';
-  const schema = '2.1.0-collapsed-defaults.1';
+  const schema = '2.2.0-collapsed-defaults.1';
   const resetToCollapsed = localStorage.getItem(schemaKey) !== schema;
   for (const detail of document.querySelectorAll('details[data-collapsible]')) {
     const key = `jobclaw.collapse.${detail.dataset.collapsible}`;
@@ -1759,7 +1804,7 @@ async function saveSettings() {
     pacingPreset: $('pacingPreset').value || 'standard',
     queueWarmup: Number($('queueWarmup').value || 4),
     dryRun: $('dryRun').checked,
-    dailyTarget: Number($('dailyTarget').value || 30),
+    dailyTarget: Number($('dailyTarget').value || 150),
     discoveryLimit: Number($('discoveryLimit').value || 150),
     maxPerCompanyPerDay: Number($('maxPerCompanyPerDay').value || 3),
     maxSearchTasks: Number($('maxSearchTasks').value || 120),
@@ -1772,7 +1817,10 @@ async function saveSettings() {
     betweenJobsSeconds: Math.max(6, Math.min(120, Number($('betweenJobsSeconds').value || 9))),
     attachmentDelaySeconds: Math.max(1.5, Math.min(15, Number($('attachmentDelaySeconds').value || 3))),
     jitterSeconds: Math.max(0, Math.min(15, Number($('jitterSeconds').value || 3))),
-    maxConsecutiveFailures: Math.max(1, Math.min(10, Number($('maxConsecutiveFailures').value || 3))),
+    maxConsecutiveFailures: Math.max(1, Math.min(10, Number($('maxConsecutiveFailures').value || 6))),
+    autoRecoveryEnabled: $('autoRecoveryEnabled').checked,
+    autoRecoveryMaxAttempts: Math.max(1, Math.min(6, Number($('autoRecoveryMaxAttempts').value || 3))),
+    autoRecoveryCooldownSeconds: Math.max(20, Math.min(1800, Number($('autoRecoveryCooldownSeconds').value || 45))),
     companyVerificationProvider: $('companyVerificationProvider').value || 'bridge',
     companyVerificationCacheDays: Number($('companyVerificationCacheDays').value || 14),
     companyVerificationEnabled: $('companyVerificationEnabled').checked,
@@ -2065,6 +2113,38 @@ function bindActions() {
     const result = await send('PROBE_AND_REPAIR');
     setBusy(button, false, '', '检测页面');
     showToast(result.ok ? (result.result?.message || 'BOSS 页面连接正常') : (result.error || '检测失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('autoRecoverNow').addEventListener('click', async () => {
+    const button = $('autoRecoverNow');
+    setBusy(button, true, '修复中…', '立即自动修复');
+    const result = await send('AUTO_RECOVER_NOW');
+    setBusy(button, false, '', '立即自动修复');
+    showToast(result.ok ? (result.result || result.message || '自动修复已完成') : (result.error || '自动修复失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('homeAutoRecover').addEventListener('click', async () => {
+    const button = $('homeAutoRecover');
+    setBusy(button, true, '修复中…', '立即自动修复');
+    const result = await send('AUTO_RECOVER_NOW');
+    setBusy(button, false, '', '立即自动修复');
+    showToast(result.ok ? (result.result || result.message || '自动修复已完成') : (result.error || '自动修复失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('continueIncident').addEventListener('click', async () => {
+    const button = $('continueIncident');
+    setBusy(button, true, '继续中…', '已处理并继续');
+    const result = await send('CONTINUE_AFTER_INCIDENT');
+    setBusy(button, false, '', '已处理并继续');
+    showToast(result.ok ? (result.message || '已从断点继续任务') : (result.error || '继续失败'), !result.ok);
+    await refresh({ forms: false });
+  });
+  $('homeContinueIncident').addEventListener('click', async () => {
+    const button = $('homeContinueIncident');
+    setBusy(button, true, '继续中…', '已处理并继续');
+    const result = await send('CONTINUE_AFTER_INCIDENT');
+    setBusy(button, false, '', '已处理并继续');
+    showToast(result.ok ? (result.message || '已从断点继续任务') : (result.error || '继续失败'), !result.ok);
     await refresh({ forms: false });
   });
   $('resetAndResume').addEventListener('click', async () => {
