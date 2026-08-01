@@ -14,7 +14,7 @@ const [manifest, html, background, content, common, safety, company, dedup, upda
   readFile('../desktop-bridge/server.js', 'utf8')
 ]);
 
-if (manifest.version !== '2.0.0') throw new Error('v1.7 manifest missing');
+if (manifest.version !== '2.0.1') throw new Error('v1.7 manifest missing');
 if (!manifest.host_permissions.includes('https://api.github.com/*') || !manifest.permissions.includes('nativeMessaging')) throw new Error('GitHub update permission missing');
 for (const token of ['batchStrategy', 'massApplyAnalysis', 'pacingPreset', 'dryRun', 'discoveryLimit', 'maxPerCompanyPerDay', 'companyVerificationEnabled', 'updateCheckEnabled', 'dailyReportEnabled', 'dailyReportTime']) {
   if (!common.includes(token) || !html.includes(`id="${token}"`)) throw new Error(`v1.7 setting missing: ${token}`);

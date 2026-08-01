@@ -11,7 +11,7 @@ for (const token of ['完全海投','安全海投','data-batch-strategy="full-ma
 for (const token of ['setBatchStrategy','normalizedBatchStrategy','settingsStrategyPill']) assert.ok(sidepanel.includes(token), token);
 for (const token of ["normalized === 'full-mass'","ignoredHardBlocks","normalizeStrategy"]) assert.ok(safety.includes(token), token);
 for (const token of ['BOSS_RESULT_FILTERS','filterPopupRoot','readFilterValue','confirmed: true','actualValue']) assert.ok(content.includes(token), token);
-for (const token of ['humanGreetingTemplate','cleanGreetingJobTitle','splitProjectEvidence','最多出现2项真实技术','不能把“某某开发实习生']) assert.ok(background.includes(token), token);
-assert.match(content, /2\.0\.0-strategy-filters\.1/);
-assert.match(background, /2\.0\.0-strategy-filters\.1/);
+for (const token of ['humanGreetingTemplate','cleanGreetingJobTitle','splitProjectEvidence','4到6项真实技术','也不能把“某某实习生','v200FullGreetingHotfixMigration']) assert.ok(background.includes(token), token);
+assert.match(content, /2\.0\.1-greeting-hotfix\.1/);
+assert.match(background, /2\.0\.1-greeting-hotfix\.1/);
 console.log('UI200_FULL_SAFE_FILTERS_GREETING_OK');

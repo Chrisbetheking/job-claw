@@ -16,8 +16,8 @@ const NATIVE_BRIDGE_HOST = 'com.jobclaw.bridge';
 let lastBridgeSnapshotAt = 0;
 let bridgeUnavailableUntil = 0;
 let bridgeLastError = '';
-const EXPECTED_CONTENT_VERSION = '2.0.0';
-const EXPECTED_CONTENT_BUILD = '2.0.0-strategy-filters.1';
+const EXPECTED_CONTENT_VERSION = '2.0.1';
+const EXPECTED_CONTENT_BUILD = '2.0.1-greeting-hotfix.1';
 const CONTENT_SCRIPT_FILE = 'content-v37.js';
 const STARTUP_TOTAL_TIMEOUT_MS = 15000;
 const STARTUP_STALE_AFTER_MS = 30000;
@@ -1186,7 +1186,7 @@ async function init() {
       batchStrategy: normalizeStrategy(baseConfig.batchStrategy || 'safe-mass'),
       greetingStyle: baseConfig.greetingStyle === 'natural-project' ? 'human-project' : (baseConfig.greetingStyle || 'human-project')
     };
-    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '2.0.0' };
+    patch.updateInfo = { ...DEFAULTS.updateInfo, ...(current.updateInfo || {}), currentVersion: '2.0.1' };
     patch.workflow = {
       ...DEFAULTS.workflow,
       ...(patch.workflow || current.workflow || {}),
@@ -1195,9 +1195,28 @@ async function init() {
       phase: 'idle',
       startup: { ...DEFAULTS.workflow.startup },
       actualSearchContext: null,
-      statusText: 'v2.0 已升级完全海投 安全海投 筛选核验和真人项目招呼语 请刷新 BOSS 页面后重新开始'
+      statusText: 'v2.0.1 已修复完整求职招呼语和岗位元数据清洗 请刷新 BOSS 页面后重新开始'
     };
     patch.v200StrategyFilterGreetingMigration = true;
+  }
+  if (!current.v200FullGreetingHotfixMigration) {
+    const profileForGreeting = patch.profile || current.profile || null;
+    const resumeForGreeting = String(current.resumeText || '');
+    const basePending = Array.isArray(patch.pending) ? patch.pending : (Array.isArray(current.pending) ? current.pending : []);
+    patch.pending = basePending.map(item => {
+      if (['sent', 'rejected'].includes(item?.status)) return item;
+      const existingGreeting = String(item?.deliveryGreeting || item?.analysis?.greeting || '').trim();
+      const shouldRefresh = existingGreeting.length < 120
+        || /本月活跃|今日活跃|刚刚活跃|\d+\s*(?:分钟|小时|天|周|月)内活跃|方便沟通下吗|还在招吗/.test(existingGreeting);
+      if (!shouldRefresh || !profileForGreeting) return item;
+      const greeting = fallbackApplicantGreeting(item?.job || {}, profileForGreeting, 'human-project', resumeForGreeting);
+      return {
+        ...item,
+        deliveryGreeting: greeting,
+        analysis: { ...(item?.analysis || {}), greeting }
+      };
+    });
+    patch.v200FullGreetingHotfixMigration = true;
   }
   if (Object.keys(patch).length) await storage.set(patch);
   const { stats } = await storage.get('stats');
@@ -2887,7 +2906,7 @@ function selectedDirectionItems(plan = {}) {
 function compactEvidenceText(value, maxLength = 72) {
   return String(value || '')
     .replace(/^[\s\-•·\d.、）)]+/, '')
-    .replace(/^(项目经历|项目名称|工作经历|实习经历|主要职责|职责|项目)[:：\s]*/i, '')
+    .replace(/^(项目经历|项目名称|工作经历|实习经历|主要职责|职责|项目|教育经历)[:：\s]*/i, '')
     .replace(/https?:\/\/\S+/gi, '')
     .replace(/\s+/g, ' ')
     .replace(/[，,；;。.!！?？]+$/g, '')
@@ -2904,13 +2923,18 @@ function greetingTokens(job = {}) {
 }
 
 function cleanGreetingJobTitle(value = '') {
-  let title = compactEvidenceText(value || '这个岗位', 44)
+  let title = compactEvidenceText(value || '这个岗位', 72)
+    .replace(/\d+\s*(?:分钟|小时|天|周|月)内活跃/gi, '')
+    .replace(/本月活跃|今日活跃|刚刚活跃|招聘者|HRBP|HR|Boss/gi, '')
     .replace(/[（(](?:急聘|校招|社招|可转正|双休|高薪|base[^）)]*)[）)]/gi, '')
-    .replace(/\s+/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
+  const salaryAt = title.search(/\b\d+(?:\.\d+)?\s*[-~至]\s*\d+(?:\.\d+)?\s*(?:K|k|元|万|\/天|\/月)/);
+  if (salaryAt > 0) title = title.slice(0, salaryAt);
   title = title.replace(/[-—–|｜]\s*(?:泛抖音|抖音|电商|商业化|广告|生活服务|某事业部|业务线|急聘|双休|可转正|校招|社招).*$/i, '');
-  title = title.replace(/(?:招聘|职位)$/g, '').trim();
-  return title.slice(0, 24) || '这个岗位';
+  title = title.replace(/(?:招聘|职位)$/g, '').replace(/\s+/g, '').trim();
+  if (/^[\u4e00-\u9fa5]{2,4}(?:本月|今日|刚刚|\d+月内)/.test(title)) return '这个岗位';
+  return title.slice(0, 28) || '这个岗位';
 }
 
 function looksLikeRoleInsteadOfProject(value = '') {
@@ -2922,7 +2946,7 @@ function looksLikeRoleInsteadOfProject(value = '') {
 }
 
 function splitProjectEvidence(value = '') {
-  const clean = compactEvidenceText(value, 130)
+  const clean = compactEvidenceText(value, 150)
     .replace(/^(我|本人)(曾经|之前|主要)?/i, '')
     .trim();
   if (!clean || looksLikeRoleInsteadOfProject(clean)) return null;
@@ -2948,22 +2972,22 @@ function splitProjectEvidence(value = '') {
     || contribution.split(/[，,、]/).map(item => item.trim()).filter(Boolean)[0]
     || '';
   if (!name || name.length < 3) return null;
-  return { name: name.slice(0, 26), contribution: action.slice(0, 34) };
+  return { name: name.slice(0, 30), contribution: action.slice(0, 42), clean };
 }
 
-function relevantProfileEvidence(job, profile = {}) {
+function projectEvidenceList(job, profile = {}, limit = 4) {
   const tokens = greetingTokens(job);
-  const skills = normalizeStringList(profile?.facts?.skills, 30);
+  const skills = normalizeStringList(profile?.facts?.skills, 40);
   const matchedSkills = skills.filter(skill => {
     const key = String(skill || '').toLowerCase();
     return key && tokens.some(token => token.includes(key) || key.includes(token));
-  }).slice(0, 2);
+  });
   const candidates = [
-    ...normalizeStringList(profile?.facts?.projects, 12).map(text => ({ kind: 'project', text })),
-    ...normalizeStringList(profile?.facts?.experiences, 8).map(text => ({ kind: 'experience', text }))
+    ...normalizeStringList(profile?.facts?.projects, 16).map(text => ({ kind: 'project', text })),
+    ...normalizeStringList(profile?.facts?.experiences, 10).map(text => ({ kind: 'experience', text }))
   ].map(item => {
     const parsed = splitProjectEvidence(item.text);
-    const clean = compactEvidenceText(item.text, 120);
+    const clean = compactEvidenceText(item.text, 150);
     if (!parsed) return null;
     const lower = clean.toLowerCase();
     let score = item.kind === 'project' ? 14 : 4;
@@ -2972,76 +2996,183 @@ function relevantProfileEvidence(job, profile = {}) {
     if (/负责|实现|开发|搭建|设计|封装|优化|接入|联调|检索|问答/.test(clean)) score += 7;
     return { ...item, ...parsed, clean, score };
   }).filter(Boolean).sort((a, b) => b.score - a.score || a.name.length - b.name.length);
+  return candidates.slice(0, limit);
+}
+
+function relevantProfileEvidence(job, profile = {}) {
+  const tokens = greetingTokens(job);
+  const skills = normalizeStringList(profile?.facts?.skills, 40);
+  const matchedSkills = skills.filter(skill => {
+    const key = String(skill || '').toLowerCase();
+    return key && tokens.some(token => token.includes(key) || key.includes(token));
+  });
+  const orderedSkills = uniq([...matchedSkills, ...skills]).slice(0, 6);
+  const projects = projectEvidenceList(job, profile, 4);
   return {
-    matchedSkills: matchedSkills.length ? matchedSkills : skills.slice(0, 2),
-    project: candidates[0] || null,
-    education: compactEvidenceText(normalizeStringList(profile?.facts?.education, 3)[0] || '', 42)
+    matchedSkills: orderedSkills,
+    project: projects[0] || null,
+    projects,
+    education: compactEvidenceText(normalizeStringList(profile?.facts?.education, 4)[0] || '', 68)
   };
+}
+
+function resumeGreetingLines(resumeText = '') {
+  return String(resumeText || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 120);
+}
+
+function applicantName(profile = {}, resumeText = '') {
+  const direct = [profile?.name, profile?.fullName, profile?.personalInfo?.name, profile?.personal?.name]
+    .map(value => String(value || '').trim())
+    .find(value => /^[\u4e00-\u9fa5]{2,4}$/.test(value) || /^[A-Za-z][A-Za-z .'-]{1,40}$/.test(value));
+  if (direct) return direct;
+  const blocked = /^(个人简历|求职简历|简历|个人信息|基本信息|教育经历|项目经历|工作经历|实习经历|联系方式)$/;
+  for (const line of resumeGreetingLines(resumeText).slice(0, 12)) {
+    const exact = line.match(/^(?:姓名[:：]\s*)?([\u4e00-\u9fa5]{2,4})$/);
+    if (exact && !blocked.test(exact[1])) return exact[1];
+    const prefixed = line.match(/^姓名[:：]\s*([\u4e00-\u9fa5]{2,4})/);
+    if (prefixed) return prefixed[1];
+  }
+  return '';
+}
+
+function applicantEducation(profile = {}, resumeText = '') {
+  const candidates = [
+    ...normalizeStringList(profile?.facts?.education, 6),
+    ...resumeGreetingLines(resumeText).filter(line => /大学|学院/.test(line) && /专业|本科|硕士|博士|在读|毕业/.test(line)).slice(0, 6)
+  ];
+  for (let value of candidates) {
+    value = compactEvidenceText(value, 88)
+      .replace(/(?:19|20)\d{2}[.\-/年]\d{1,2}(?:[.\-/月]\d{1,2})?\s*[-~至—–]\s*(?:至今|(?:19|20)\d{2}[.\-/年]\d{1,2}(?:[.\-/月]\d{1,2})?)/g, '')
+      .replace(/教育经历[:：]?/g, '')
+      .replace(/[|｜·•]/g, ' ')
+      .replace(/\s+/g, '')
+      .trim();
+    if (/大学|学院/.test(value) && value.length >= 6) return value.slice(0, 52);
+  }
+  return '';
+}
+
+function applicantAvailability(profile = {}, resumeText = '') {
+  const source = `${resumeText || ''}\n${profile?.summary || ''}\n${profile?.hardConstraints?.experience || ''}`.replace(/\s+/g, ' ');
+  const arrivalMatch = source.match(/可立即到岗|可以立即到岗|随时到岗|一周内到岗|两周内到岗|可于[^，。；]{1,18}到岗|最早[^，。；]{1,18}到岗/);
+  const durationMatch = source.match(/(?:能|可|可以)?(?:稳定|连续)?实习(?:时间)?\s*[:：]?\s*([一二三四五六七八九十\d]+)\s*个?月/);
+  return {
+    arrival: arrivalMatch ? arrivalMatch[0].replace(/^可以/, '可') : '',
+    duration: durationMatch ? `${durationMatch[1]}个月` : ''
+  };
+}
+
+function greetingModules(profile = {}, limit = 6) {
+  const source = [
+    ...normalizeStringList(profile?.facts?.projects, 16),
+    ...normalizeStringList(profile?.facts?.experiences, 12)
+  ].join(' ');
+  const patterns = [
+    '页面开发', '前端开发', '接口封装', '接口联调', 'API封装', '检索逻辑', 'RAG问答', '表单状态',
+    '状态管理', '结果展示', '组件开发', '模型接入', '权限控制', '自动化流程', '数据可视化', '数据处理',
+    '文件解析', 'OCR识别', '服务端开发', '数据库设计', '性能优化'
+  ];
+  return patterns.filter(item => source.toLowerCase().includes(item.toLowerCase())).slice(0, limit);
 }
 
 function compactContribution(project, skillText = '') {
   if (!project) return '';
   let contribution = String(project.contribution || '').trim();
   if (!contribution && skillText) contribution = `${skillText}相关功能`;
-  contribution = contribution.replace(/^(主要)?负责/i, '').replace(/[。；;]+$/g, '').slice(0, 34);
+  contribution = contribution.replace(/^(主要)?负责/i, '').replace(/[。；;]+$/g, '').slice(0, 42);
   return contribution;
 }
 
-function humanGreetingTemplate(job, profile, style = 'human-project') {
+function humanGreetingTemplate(job, profile, style = 'human-project', resumeText = '') {
   const title = cleanGreetingJobTitle(job?.title || '这个岗位');
   const evidence = relevantProfileEvidence(job, profile);
-  const skills = evidence.matchedSkills.slice(0, 2);
+  const skills = evidence.matchedSkills.slice(0, 6);
+  const projects = evidence.projects.slice(0, 4);
+  const modules = greetingModules(profile, 6);
+  const name = applicantName(profile, resumeText);
+  const education = applicantEducation(profile, resumeText) || evidence.education;
+  const availability = applicantAvailability(profile, resumeText);
   const skillText = skills.join('、');
-  const project = evidence.project;
-  const contribution = compactContribution(project, skillText);
-  const seed = [...`${job?.company || ''}${title}`].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 3;
+  const projectNames = uniq(projects.map(item => item.name)).slice(0, 4);
+  const projectText = projectNames.join('、');
+
   if (style === 'concise') {
-    return `您好，想问下${title}还在招吗？${project ? `我做过${project.name}${contribution ? `，主要负责${contribution}` : ''}` : skillText ? `我有${skillText}相关项目经验` : '我对岗位方向比较感兴趣'}，方便沟通下吗？`.slice(0, 120);
+    const intro = name ? `您好，我是${name}` : '您好';
+    const evidenceText = projects[0]
+      ? `我做过${projects[0].name}${projects[0].contribution ? `，主要负责${projects[0].contribution}` : ''}`
+      : skillText ? `我有${skillText}相关项目经验` : '我对岗位方向比较感兴趣';
+    return `${intro}，想应聘${title}。${evidenceText}，方便进一步沟通吗？`.replace(/。{2,}/g, '。').slice(0, 180);
   }
-  if (style === 'skill-first' && skillText) {
-    return `您好，看到你们在招${title}。我平时主要用${skillText}${project ? `，在${project.name}里负责${contribution || '相关功能开发'}` : '做项目'}，想和您具体聊聊。`.slice(0, 125);
+
+  if (style === 'skill-first') {
+    const intro = name ? `您好，我是${name}` : '您好';
+    const school = education ? `，${education}` : '';
+    const tech = skillText ? `我熟悉${skillText}等技术` : '我有相关项目实践';
+    const project = projectText ? `，也做过${projectText}等项目` : '';
+    return `${intro}${school}。${tech}${project}。希望能就${title}进一步沟通。`.replace(/。{2,}/g, '。').slice(0, 260);
   }
-  const intros = [
-    `您好，看到你们在招${title}，想了解一下。`,
-    `您好，想问下${title}还在招吗？`,
-    `您好，关注到${title}这个岗位。`
-  ];
-  let middle = '';
-  if (project) {
-    middle = `我做过${project.name}${contribution ? `，主要负责${contribution}` : ''}${skillText && !contribution.toLowerCase().includes(skills[0]?.toLowerCase() || '___') ? `，技术上用过${skillText}` : ''}。`;
-  } else if (skillText) {
-    middle = `我有${skillText}相关的项目实践，做过页面和功能落地。`;
-  } else {
-    middle = '我看了岗位内容，和自己目前在做的方向比较接近。';
+
+  const firstParts = [];
+  if (name) firstParts.push(`您好，我是${name}`);
+  else firstParts.push('您好');
+  if (education) firstParts.push(education);
+  if (availability.arrival) firstParts.push(availability.arrival);
+  if (availability.duration) firstParts.push(`能稳定实习${availability.duration}`);
+  let firstSentence = firstParts.join('，');
+  if (firstSentence === '您好') firstSentence = `您好，我想应聘${title}`;
+  firstSentence += '。';
+
+  const secondParts = [];
+  if (skillText) secondParts.push(`我熟悉${skillText}等技术`);
+  if (projectText) secondParts.push(`也做过${projectText}${projectNames.length >= 3 ? '等' : ''}项目`);
+  const secondSentence = secondParts.length ? `${secondParts.join('，')}。` : `我对${title}的工作内容比较感兴趣。`;
+
+  let thirdSentence = '';
+  if (modules.length) {
+    thirdSentence = `过往项目中参与过${modules.join('、')}等模块，比较注重功能落地和细节处理。`;
+  } else if (projects[0]) {
+    const contribution = compactContribution(projects[0], skillText);
+    thirdSentence = contribution
+      ? `过往项目中主要负责${contribution}，比较注重功能落地和细节处理。`
+      : '过往项目中比较注重功能落地和细节处理。';
   }
-  const endings = seed === 1 ? '方便沟通下吗？' : seed === 2 ? '想和您具体聊聊。' : '这个岗位现在方便聊聊吗？';
-  return `${intros[seed]}${middle}${endings}`
+
+  const ending = '希望有机会加入贵公司，在真实业务中继续提升工程能力。';
+  return `${firstSentence}${secondSentence}${thirdSentence}${ending}`
     .replace(/。{2,}/g, '。')
     .replace(/，，+/g, '，')
-    .replace(/我做过([^，。]{2,18})(实习生|工程师|岗位)/g, '我有$1相关实践')
+    .replace(/项目项目/g, '项目')
     .trim()
-    .slice(0, 128);
+    .slice(0, 320);
 }
 
-function fallbackApplicantGreeting(job, profile, style = 'human-project') {
-  return humanGreetingTemplate(job, profile, style);
+function fallbackApplicantGreeting(job, profile, style = 'human-project', resumeText = '') {
+  return humanGreetingTemplate(job, profile, style, resumeText);
 }
 
-function normalizeApplicantGreeting(result, job, profile, style = 'human-project') {
+function normalizeApplicantGreeting(result, job, profile, style = 'human-project', resumeText = '') {
   const raw = String(result?.greeting || '').replace(/\s+/g, ' ').trim();
-  const reversed = /看到你的简历|你的简历|很匹配我们|匹配我们|欢迎.*沟通|期待你|候选人|我们团队|我们公司|团队主要涉及|你很匹配|方便的话来聊聊/i.test(raw);
-  const robotic = /希望有机会加入贵公司|在真实业务中继续提升|具有良好的学习能力|对岗位的工作内容很感兴趣|期待您的回复|感谢您百忙之中|贵公司|本人具备|个人能力/i.test(raw);
+  const reversed = /看到你的简历|你的简历|很匹配我们|匹配我们|欢迎.*沟通|期待你|候选人|我们团队|我们公司|团队主要涉及|你很匹配/i.test(raw);
+  const recruiterNoise = /本月活跃|今日活跃|刚刚活跃|\d+\s*(?:分钟|小时|天|周|月)内活跃|招聘者姓名/i.test(raw);
   const badProject = /我(?:之前)?做过.{0,22}(?:实习生|工程师|岗位|职位)/i.test(raw);
-  const applicantVoice = /想问下|想了解一下|看到你们在招|关注到|想和您.*聊|方便沟通/.test(raw);
-  const projectGrounded = /做过|负责|实现|开发|搭建|项目|实践|用过|主要用/.test(raw);
   const evidence = relevantProfileEvidence(job, profile);
-  if (!raw || reversed || robotic || badProject || !applicantVoice || raw.length > 135 || (!projectGrounded && evidence.project)) {
-    return fallbackApplicantGreeting(job, profile, style);
+  const fullStyle = style === 'human-project' || style === 'natural-project';
+  const applicantVoice = /我是|我想应聘|我熟悉|我做过|过往项目|希望有机会/.test(raw);
+  const projectGrounded = /做过|负责|实现|开发|搭建|项目|实践|页面|接口|检索|状态|展示/.test(raw);
+  const minimumLength = fullStyle ? 120 : 40;
+  const maximumLength = fullStyle ? 330 : 220;
+  if (!raw || reversed || recruiterNoise || badProject || !applicantVoice || raw.length < minimumLength || raw.length > maximumLength || (!projectGrounded && evidence.project)) {
+    return fallbackApplicantGreeting(job, profile, style, resumeText);
   }
-  return raw.slice(0, 135);
+  return raw.slice(0, maximumLength);
 }
 
-function fastMassAnalysis(job, profile, strategy = 'safe-mass') {
+function fastMassAnalysis(job, profile, strategy = 'safe-mass', resumeText = '') {
   const normalizedStrategy = normalizeStrategy(strategy);
   const jobText = [job?.title, job?.description, job?.cardText].filter(Boolean).join('\n').toLowerCase();
   const skills = normalizeStringList(profile?.facts?.skills, 20);
@@ -3064,7 +3195,7 @@ function fastMassAnalysis(job, profile, strategy = 'safe-mass') {
     reason: normalizedStrategy === 'full-mass'
       ? '完全海投快速模式 不以技能 年限 专业 学历或岗位匹配度拦截 仅保留安全风险和去重检查'
       : '安全海投快速模式 只拦截明确硬性冲突 重复岗位和高风险岗位 其他差距仅用于排序',
-    greeting: fallbackApplicantGreeting(job, profile, 'human-project'),
+    greeting: fallbackApplicantGreeting(job, profile, 'human-project', resumeText),
     analysisMode: normalizedStrategy === 'full-mass' ? 'local-full-mass-fast' : 'local-safe-mass-fast'
   };
 }
@@ -3075,14 +3206,14 @@ async function analyzeJob(job) {
   const strategy = normalizeStrategy(config?.batchStrategy);
   const massMode = strategy === 'full-mass' || strategy === 'safe-mass';
   const greetingStyle = ['human-project', 'natural-project', 'concise', 'skill-first'].includes(config?.greetingStyle) ? config.greetingStyle : 'human-project';
-  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile, strategy);
+  if (massMode && config?.massApplyAnalysis !== 'ai') return fastMassAnalysis(job, profile, strategy, resumeText);
   const strategyInstruction = strategy === 'full-mass'
     ? '当前为完全海投模式。不得因为技能、年限、专业、学历、行业经验或匹配分不足拒绝岗位，decision原则上为recommend。只识别企业诈骗、收费、账号或岗位明显异常等安全风险，硬性要求仅记录到gaps用于排序。'
     : '当前为安全海投模式。技能、技术栈、专业、学历偏差、经验年限不足和行业经历缺失通常只放入gaps；只有JD明确写出必须、仅限、不接受且与用户真实条件存在不可改变冲突时，才写入hardBlocks并允许reject。';
   const result = await callModel([
     {
       role: 'system',
-      content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting必须像本人在招聘软件里临时发出的第一条消息，65到120个中文字符，2到3句。岗位名先去掉“泛抖音、业务线、急聘、双休”等尾部标签。开头用“看到你们在招…”“想问下…还在招吗”或“关注到…岗位”这类自然说法；中间只能带一段最相关的真实项目，写清项目名和本人实际负责的一项内容，最多出现2项真实技术；结尾自然询问是否方便沟通。不能把“某某开发实习生、工程师”等职位名称说成做过的项目。禁止写贵公司、本人具备、希望加入、提升能力、学习能力强、期待回复等模板套话，不要罗列学校、到岗时间、所有技术和多个项目。招呼语风格=${greetingStyle}。`
+      content: `你是求职者的岗位分析助手，不是招聘方。所有经历必须来自简历事实。${strategyInstruction} 输出JSON：{"score":0,"decision":"recommend|cautious|reject","hardBlocks":[],"matchedEvidence":[],"gaps":[],"risks":[],"reason":"","greeting":""}。greeting要写成完整、专业但不生硬的求职自我介绍，默认170到280个中文字符，4到5句。优先按这个顺序组织：1 姓名、学校、专业和学历；2 真实到岗时间与可稳定实习时长；3 4到6项真实技术；4 2到4个真实项目；5 过去项目中本人实际负责的页面、接口、检索、表单状态、结果展示等模块；6 表达希望进一步沟通和参与真实业务。只能写简历里明确存在的事实，缺少哪项就省略，绝不能补造。不要把招聘者姓名、活跃状态、薪资、学历标签混进岗位名，也不能把“某某实习生、工程师”写成做过的项目。禁止使用“想问下某某本月活跃还在招吗”这类错误句式。可以使用“希望有机会加入贵公司，在真实业务中继续提升工程能力”这类正式表达。招呼语风格=${greetingStyle}。`
     },
     {
       role: 'user',
@@ -3090,7 +3221,7 @@ async function analyzeJob(job) {
     }
   ]);
   result.score = Math.max(0, Math.min(100, Number(result.score || 0)));
-  result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle);
+  result.greeting = normalizeApplicantGreeting(result, job, profile, greetingStyle, resumeText);
   result.hardBlocks = Array.isArray(result.hardBlocks) ? result.hardBlocks.map(item => String(item || '').trim()).filter(Boolean) : [];
   result.strictHardBlocks = strictHardBlocks(result.hardBlocks);
   if (strategy === 'full-mass') result.decision = 'recommend';

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "JobClaw by Chris 求职助手",
-  "version": "2.0.0",
-  "version_name": "2.0.0 Formal · Full/Safe Mass Apply, Verified Filters and Human Greetings",
+  "version": "2.0.1",
+  "version_name": "2.0.1 Hotfix · Complete Applicant Greeting and Metadata Cleanup",
   "description": "本地优先的AI求职助手 支持完全海投与安全海投 多城市轮投 地区/类型/薪资/经验/学历真实核验 自然项目招呼语 聊天恢复 岗位去重 企业核验和OpenClaw日报",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6a+/zOOIxDtLFYfbfzu+anBGqJbgSRD1eFvosBXE3+kYaeClj1ASo1iMwNArIZWvKLu3AT9L1J1WUZfm2JbRh8Nkl8Gs6RUXxqxaw3zyBSOCBgDphLrrhXDXjdZ6EuYATST1rkvzdawCfS658jV3mEO3UqGcwtjod6mp5yg8J1SswaCaQHvSFSVbg55NFzCyqma5mmRENOqFjBc7yxkIMUUabfKlTZkCR7hgOZ2HBUSzqwenz03iizAg+2mPyC1e+8KH8Or7+/NdnMB5xcOz3esjEKLIvIYUwE1GQ7MrdF0LxEE1MbLBob+3f/GaGJ61go0BFwPiIga8sYmnMTtQWQIDAQAB",
   "permissions": [

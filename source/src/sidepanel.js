@@ -1158,8 +1158,8 @@ function renderDynamic() {
   $('resetSafety')?.toggleAttribute('disabled', !safety.circuitOpen && !Number(safety.consecutiveFailures || 0));
   $('clearJobHistory')?.toggleAttribute('disabled', !Number(state.jobSeenHistoryCount || 0));
   const update = state.updateInfo || {};
-  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.0.0'));
-  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.0.0'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
+  setText('updateVersionPill', update.available ? `可更新 ${update.latestVersion}` : (update.currentVersion || '2.0.1'));
+  setText('updateStatusText', update.error || (update.available ? `${update.name || '发现新版本'} · 点击查看` : `当前版本 ${update.currentVersion || '2.0.1'}${update.checkedAt ? ' · 已是最新检查结果' : ''}`));
   if ($('openUpdate')) $('openUpdate').hidden = !update.available;
   renderStartupFeedback(workflow);
   renderActualSearchContext(workflow);
@@ -1531,7 +1531,7 @@ function bindResumeTabs() {
 
 function bindExplicitCollapsibles() {
   const schemaKey = 'jobclaw.collapse.schema';
-  const schema = '2.0.0-collapsed-defaults.1';
+  const schema = '2.0.1-collapsed-defaults.1';
   const resetToCollapsed = localStorage.getItem(schemaKey) !== schema;
   for (const detail of document.querySelectorAll('details[data-collapsible]')) {
     const key = `jobclaw.collapse.${detail.dataset.collapsible}`;

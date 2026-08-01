@@ -23,7 +23,7 @@ for (const token of ['APPROVE_ALL', 'REJECT_ALL', 'queue-greeting-editor', 'setE
 for (const token of ["activeConfig.executionMode === 'auto'", "send('AUTO_DISPATCH_NEXT'", 'activeConfig.dailyTarget']) {
   if (!content.includes(token)) throw new Error(`全自动执行链路缺失：${token}`);
 }
-for (const token of ['AUTO_APPROVE', 'approveAllPending', 'approved_queue', 'normalizeApplicantGreeting', 'humanGreetingTemplate', '只能带一段最相关的真实项目']) {
+for (const token of ['AUTO_APPROVE', 'approveAllPending', 'approved_queue', 'normalizeApplicantGreeting', 'humanGreetingTemplate', '完整、专业但不生硬的求职自我介绍']) {
   if (!background.includes(token)) throw new Error(`求职者投递链路缺失：${token}`);
 }
 if (!background.includes('求职者的岗位分析助手，不是招聘方')) throw new Error('AI 角色没有固定为求职者');

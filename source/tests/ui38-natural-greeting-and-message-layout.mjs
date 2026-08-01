@@ -10,13 +10,14 @@ const [background, content, sidepanel, html, css, common] = await Promise.all([
   readFile(`${root}/common.js`, 'utf8')
 ]);
 
-for (const token of ['humanGreetingTemplate', 'relevantProfileEvidence', 'greetingStyle', '只能带一段最相关的真实项目']) {
+for (const token of ['humanGreetingTemplate', 'applicantName', 'applicantEducation', 'applicantAvailability', 'greetingModules', 'greetingStyle']) {
   if (!background.includes(token) && !common.includes(token)) throw new Error(`自然招呼语能力缺失：${token}`);
 }
-for (const bad of ['希望有机会加入贵公司', '在真实业务中继续提升']) {
-  if (!background.includes(bad)) throw new Error(`缺少模板套话拦截：${bad}`);
+for (const token of ['完整、专业但不生硬的求职自我介绍', '希望有机会加入贵公司', '真实到岗时间']) {
+  if (!background.includes(token)) throw new Error(`完整招呼语规则缺失：${token}`);
 }
-for (const token of ['cleanJobTitle', 'plausibleJobTitle', 'cleanCompanyName', 'CHAT_EDITOR_TIMEOUT', '2.0.0-strategy-filters.1']) {
+
+for (const token of ['cleanJobTitle', 'plausibleJobTitle', 'cleanCompanyName', 'CHAT_EDITOR_TIMEOUT', '2.0.1-greeting-hotfix.1']) {
   if (!content.includes(token)) throw new Error(`岗位提取或沟通恢复能力缺失：${token}`);
 }
 for (const token of ['greetingStyle', 'probeAndRepair', 'resetAndResume']) {

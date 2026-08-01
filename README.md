@@ -6,7 +6,7 @@
 
 [安装](#安装与运行) · [功能](#主要功能) · [开发](#本地开发) · [贡献](CONTRIBUTING.md) · [安全](SECURITY.md) · [许可证](#开源许可证)
 
-![Version](https://img.shields.io/badge/version-v2.0.0-078A83)
+![Version](https://img.shields.io/badge/version-v2.0.1-078A83)
 ![Chrome](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4)
 ![Node](https://img.shields.io/badge/Node.js-%3E%3D20-339933)
 ![License](https://img.shields.io/badge/license-Apache--2.0-2AA66A)
@@ -14,6 +14,8 @@
 </div>
 
 > JobClaw 不是任何招聘平台的官方产品。使用者需要遵守适用法律、目标网站规则和账号使用要求。项目不提供验证码绕过、账号轮换、代理池、设备指纹伪装或其他规避平台安全措施的能力。
+
+> **v2.0.1 临时修复版**：修复 v2.0.0 招呼语过短、岗位元数据污染和旧短招呼语迁移问题，不改变完全海投、安全海投与五项筛选的既有行为。
 
 ## 项目简介
 
@@ -38,7 +40,7 @@ JobClaw 将简历整理、职业画像、岗位搜索、条件筛选、岗位去
 - **多城市轮换**：按城市和关键词交错搜索，减少重复结果
 - **岗位去重**：岗位 ID、URL、公司、标题、地区和内容指纹联合判断
 - **企业与岗位风险提示**：本地规则加可选 OpenClaw Provider
-- **自然沟通草稿**：只引用真实项目和相关技术，支持人工修改
+- **完整求职招呼语**：从简历提取姓名、学校、到岗时间、技术、项目和负责模块，生成可编辑的完整自我介绍，只使用真实事实
 - **可靠发送**：会话身份绑定、单线程执行、限速、发送气泡确认
 - **失败恢复**：任务冷却、断点续跑、异常熔断和人工处理
 - **模拟运行**：完成采集和队列预览，但不发送消息
@@ -67,7 +69,7 @@ job-claw/
 
 ### 方式一：使用 GitHub Release
 
-普通用户进入仓库的 **Releases** 页面，下载 `JobClaw-v2.0.0.zip`，解压后在 Chrome 中加载其中的 `chrome-extension` 文件夹。
+普通用户进入仓库的 **Releases** 页面，下载 `JobClaw-v2.0.1.zip`，解压后在 Chrome 中加载其中的 `chrome-extension` 文件夹。
 
 1. 打开 `chrome://extensions`
 2. 开启“开发者模式”

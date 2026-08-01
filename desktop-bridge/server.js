@@ -417,7 +417,7 @@ const server = http.createServer((request, response) => {
         return respond(response, 200, {
           ok: true,
           name: 'jobclaw-bridge',
-          version: '2.0.0',
+          version: '2.0.1',
           transport: 'http',
           extensionId: config.extensionId || '',
           companyProvider: { mode: config.companyProvider?.mode || 'local', configured: Boolean(config.companyProvider?.endpoint) },
@@ -503,7 +503,7 @@ server.on('error', error => {
 });
 
 server.listen(config.port, '127.0.0.1', () => {
-  console.log(`JobClaw Bridge 2.0.0 Formal http://127.0.0.1:${config.port}`);
+  console.log(`JobClaw Bridge 2.0.1 Formal http://127.0.0.1:${config.port}`);
   maybeGenerateScheduledReport();
 });
 
