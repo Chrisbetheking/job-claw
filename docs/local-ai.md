@@ -1,6 +1,6 @@
 # 本地 AI
 
-JobClaw v2.1 支持三层 AI 路由：
+JobClaw v2.2 支持三层 AI 路由：
 
 ```text
 DeepSeek V4 Flash

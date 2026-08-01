@@ -1,6 +1,6 @@
 (() => {
-const JOBCLAW_CONTENT_VERSION = '2.1.0';
-const JOBCLAW_CONTENT_BUILD = '2.1.0-ai-pause.2';
+const JOBCLAW_CONTENT_VERSION = '2.2.0';
+const JOBCLAW_CONTENT_BUILD = '2.2.0-auto-recovery.1';
 const JOBCLAW_CONTENT_FILE = 'content-v37.js';
 const BOSS_JOBS_HOME_URL = 'https://www.zhipin.com/web/geek/job';
 const BOSS_CITY_NAMES = Object.freeze(['全国','北京','上海','广州','深圳','杭州','成都','南京','武汉','西安','苏州','重庆','长沙','天津','郑州','厦门','青岛','东莞','佛山','合肥','济南','福州','无锡','宁波','昆明','大连','沈阳','石家庄','南昌','南宁','贵阳','太原','哈尔滨','长春','海口','珠海','惠州','温州','嘉兴']);
@@ -3174,7 +3174,7 @@ async function processApproved(state) {
     const draftPresent = Boolean(expectedDraftText && failedDraftText
       && (failedDraftText === expectedDraftText
         || (failedDraftText.includes(expectedDraftText) && failedDraftText.length <= expectedDraftText.length + 8)));
-    const sendUncertain = !messageSentConfirmed && ['write_greeting', 'send_greeting', 'verify_text', 'verify_result'].includes(currentStage);
+    const sendUncertain = !messageSentConfirmed && ['send_greeting', 'verify_text', 'verify_result'].includes(currentStage);
     const hardSafetyFailure = /安全验证|验证码|登录|账号异常|身份不一致|其他HR|其他 HR/.test(errorText);
     const pauseQueue = identityFailure || draftPresent || sendUncertain || hardSafetyFailure;
     const completion = await send('APPLY_COMPLETE', {
@@ -3196,6 +3196,11 @@ async function processApproved(state) {
       conversation: confirmedConversation
     });
     contentRuntime.chatBinding = null;
+    if (completion?.autoRecovering) {
+      await send('WORKFLOW', { patch: { chatRecovery: null, statusText: completion?.incident?.suggestion || '当前异常正在自动恢复' } });
+      if (!draftPresent && !sendUncertain) await adapter.returnToJobsHome().catch(() => {});
+      return true;
+    }
     if (!pauseQueue) {
       await send('WORKFLOW', {
         patch: {
@@ -3266,11 +3271,27 @@ async function processSearch(state) {
     const failures = Array.isArray(filterResult?.failures) ? filterResult.failures : [];
     filterFailureCount += failures.length || 1;
     await send('STATS', { delta: { filterFailures: failures.length || 1 } });
+    const filterErrorText = `部分搜索筛选未成功：${failures.map(item => `${item.label} ${item.value}`).join('，') || '未知筛选'}`;
     await send('EVENT', {
       level: 'warning',
-      message: `部分搜索筛选未成功：${failures.map(item => `${item.label} ${item.value}`).join('，') || '未知筛选'}`,
+      message: filterErrorText,
       data: { task, failures }
     });
+    const safetyResult = await send('SAFETY_OUTCOME', {
+      ok: false,
+      reason: filterErrorText,
+      failureClass: 'filter_failure',
+      stage: 'search_filters'
+    }).catch(() => null);
+    if (safetyResult?.state?.autoRecovering) {
+      await updateSearchProgress(task, taskIndex, {
+        status: 'running', progress: 16, stageLabel: '筛选异常，正在自动修复页面',
+        processed: processedCount, discovered: discoveredCount, analyzed: analyzedCount,
+        accepted: acceptedCount, duplicates: duplicateCount, lowQuality: lowQualityCount,
+        filterFailures: filterFailureCount, failed: failedCount
+      });
+      return;
+    }
     const cityFailure = failures.find(item => item.label === '地区');
     if (cityFailure) {
       await updateSearchProgress(task, taskIndex, {
@@ -3322,7 +3343,7 @@ async function processSearch(state) {
     const latest = await send('CONTENT_STATE');
     if (!latest.ok || latest.state.workflow?.paused || !latest.state.workflow?.running) return;
     const activeConfig = latest.state.config || config;
-    if (Number(latest.state.stats?.sent || 0) >= Number(activeConfig.dailyTarget || 30)) {
+    if (Number(latest.state.stats?.sent || 0) >= Number(activeConfig.dailyTarget || 150)) {
       await updateSearchProgress(task, taskIndex, {
         status: 'completed', progress: 100, stageLabel: '已达到今日成功投递目标',
         processed: processedCount, discovered: discoveredCount, analyzed: analyzedCount, failed: failedCount

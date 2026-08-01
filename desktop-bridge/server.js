@@ -86,6 +86,11 @@ function buildReport(database, requestedDate = localDateKey()) {
   const stagnantTasks = Number(stats.stagnantTasks || 0);
   const filterFailures = Number(stats.filterFailures || 0);
   const simulated = Math.max(Number(stats.simulated || 0), simulatedEvents.length);
+  const autoRecovered = Number(stats.autoRecovered || snapshot.safetyState?.totalAutoRecovered || 0);
+  const autoSkipped = Number(stats.autoSkipped || snapshot.safetyState?.totalAutoSkipped || 0);
+  const userInterventions = Number(stats.userInterventions || snapshot.safetyState?.totalUserInterventions || 0);
+  const dailyTarget = Math.max(1, Number(snapshot.config?.dailyTarget || 150));
+  const remainingTarget = Math.max(0, dailyTarget - sent);
   const jobs = successEvents
     .map(event => event.data?.job || {})
     .filter(job => job.title || job.company)
@@ -102,7 +107,7 @@ function buildReport(database, requestedDate = localDateKey()) {
     `JobClaw × OpenClaw 求职日报｜${dateKey}`,
     '',
     `投递策略：${strategy} · ${pacing}节奏`,
-    `今日目标：${Number(snapshot.config?.dailyTarget || 0) || '未设置'}`,
+    `今日目标：${dailyTarget} · 已完成 ${sent} · 剩余 ${remainingTarget}`,
     '',
     `采集岗位：${discovered}`,
     `AI分析：${analyzed}`,
@@ -114,6 +119,9 @@ function buildReport(database, requestedDate = localDateKey()) {
     `重复过多自动切换：${stagnantTasks}`,
     `页面筛选失败：${filterFailures}`,
     `模拟通过：${simulated}`,
+    `自动修复：${autoRecovered}`,
+    `自动跳过：${autoSkipped}`,
+    `需人工处理：${userInterventions}`,
     `投递成功率：${percentage(sent, sent + failed)}`,
     `当前待处理：${Number(snapshot.queue?.waiting || stats.pending || 0)}`,
     '',
@@ -155,7 +163,7 @@ function notifyReport(result, database) {
   const snapshot = latestSnapshot(database, result.date);
   if (snapshot.config?.dailyReportNotification === false) return false;
   const stats = snapshot.stats || {};
-  const summary = `成功沟通 ${Number(stats.sent || 0)} · 分析 ${Number(stats.analyzed || 0)} · 失败 ${Number(stats.failed || 0)}`;
+  const summary = `成功沟通 ${Number(stats.sent || 0)} · 自动修复 ${Number(stats.autoRecovered || 0)} · 需人工 ${Number(stats.userInterventions || 0)}`;
   if (process.platform === 'darwin') {
     const script = `display notification ${JSON.stringify(summary)} with title ${JSON.stringify('JobClaw OpenClaw 日报')}`;
     spawn('/usr/bin/osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
@@ -417,7 +425,7 @@ const server = http.createServer((request, response) => {
         return respond(response, 200, {
           ok: true,
           name: 'jobclaw-bridge',
-          version: '2.1.0',
+          version: '2.2.0',
           transport: 'http',
           extensionId: config.extensionId || '',
           companyProvider: { mode: config.companyProvider?.mode || 'local', configured: Boolean(config.companyProvider?.endpoint) },
@@ -503,7 +511,7 @@ server.on('error', error => {
 });
 
 server.listen(config.port, '127.0.0.1', () => {
-  console.log(`JobClaw Bridge 2.1.0 Formal http://127.0.0.1:${config.port}`);
+  console.log(`JobClaw Bridge 2.2.0 Formal http://127.0.0.1:${config.port}`);
   maybeGenerateScheduledReport();
 });
 

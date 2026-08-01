@@ -9,7 +9,7 @@ const panelHtml = await readFile('public/sidepanel.html', 'utf8');
 const panelJs = await readFile('src/sidepanel.js', 'utf8');
 const aiRouting = await readFile('src/lib/ai-routing.js', 'utf8');
 
-assert.equal(manifest.version, '2.1.0');
+assert.equal(manifest.version, '2.2.0');
 assert.match(manifest.version_name, /AI Routing/);
 assert.ok(manifest.host_permissions.includes('http://127.0.0.1:11434/*'));
 assert.match(common, /massApplyAnalysis: 'auto-ai'/);
@@ -20,7 +20,7 @@ assert.match(aiRouting, /chooseAiRoute/);
 assert.match(background, /abortActiveAiRequests\('user-pause'\)/);
 assert.match(background, /broadcastBossControl\('PAUSE_NOW'/);
 assert.match(background, /broadcastBossControl\('STOP_NOW'/);
-assert.match(content, /2\.1\.0-ai-pause\.2/);
+assert.match(content, /2\.2\.0-auto-recovery\.1/);
 assert.match(content, /message\?\.type === 'PAUSE_NOW'/);
 assert.match(content, /message\?\.type === 'STOP_NOW'/);
 assert.match(content, /assertControlActive\(\)/);

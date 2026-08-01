@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { computeRateLimitDecision, evaluateStrategy, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from '../../src/lib/safety-control.js';
+import { completeAutoRecovery, computeRateLimitDecision, evaluateStrategy, recordSafetyOutcome, resetSafetyCircuit, strictHardBlocks } from '../../src/lib/safety-control.js';
 
 const config = { minScore: 75, batchStrategy: 'safe-mass', pacingPreset: 'standard', maxConsecutiveFailures: 3, jitterSeconds: 0 };
 const first = computeRateLimitDecision(config, {}, 'delivery', 1000, () => 0);
@@ -17,8 +17,16 @@ state = recordSafetyOutcome(config, state, { ok: false, reason: '网络超时' }
 assert.equal(state.backoffLevel, 1);
 state = recordSafetyOutcome(config, state, { ok: false, reason: '普通失败' }, 2);
 state = recordSafetyOutcome(config, state, { ok: false, reason: '普通失败' }, 3);
-assert.equal(state.circuitOpen, true);
+assert.equal(state.circuitOpen, false);
+assert.equal(state.autoRecovering, true);
+assert.equal(state.currentIncident.action, 'repair-page');
+const recovered = completeAutoRecovery(state, '页面已恢复', 4);
+assert.equal(recovered.circuitOpen, false);
+assert.equal(recovered.totalAutoRecovered, 1);
 assert.equal(resetSafetyCircuit(state).circuitOpen, false);
+const hard = recordSafetyOutcome(config, {}, { ok: false, reason: '检测到验证码' }, 5);
+assert.equal(hard.circuitOpen, true);
+assert.equal(hard.currentIncident.requiresUser, true);
 assert.equal(evaluateStrategy({ strategy: 'full-mass', score: 5, riskLevel: 'low', hardBlocks: ['必须本科但用户为大专'] }).accepted, true);
 assert.equal(evaluateStrategy({ strategy: 'full-mass', score: 90, riskLevel: 'high' }).accepted, false);
 console.log('UNIT_SAFETY_CONTROL_OK');

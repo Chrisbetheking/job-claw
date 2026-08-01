@@ -22,7 +22,7 @@ if (!background.includes("if (action === 'replaceTextAndEnter')")) throw new Err
 if (!background.includes('if (!matches(actual))')) throw new Error('atomic path must verify write before Enter');
 if (!content.includes('waitForStableOutgoingGreeting')) throw new Error('strict outgoing bubble confirmation missing');
 if (!content.includes('发送动作未生效；已暂停且不会切换岗位')) throw new Error('safe failure stop missing');
-if (!content.includes("const JOBCLAW_CONTENT_VERSION = '2.1.0'")) throw new Error('content version mismatch');
+if (!content.includes("const JOBCLAW_CONTENT_VERSION = '2.2.0'")) throw new Error('content version mismatch');
 if (!content.includes("const JOBCLAW_CONTENT_FILE = 'content-v37.js'")) throw new Error('content filename mismatch');
 
 console.log(JSON.stringify({
